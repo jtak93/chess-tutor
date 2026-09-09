@@ -27,6 +27,10 @@ interface ChessboardAreaProps {
   onExitRetryMode?: () => void;
   soundEnabled?: boolean;
   onToggleSound?: () => void;
+  // Live Analysis Props
+  isLiveMode?: boolean;
+  liveCandidateArrows?: Arrow[];
+  onLiveMove?: (source: Square, target: Square, promotion?: string) => boolean;
 }
 
 export const ChessboardArea: React.FC<ChessboardAreaProps> = ({
@@ -39,6 +43,9 @@ export const ChessboardArea: React.FC<ChessboardAreaProps> = ({
   onExitRetryMode,
   soundEnabled = true,
   onToggleSound,
+  isLiveMode = false,
+  liveCandidateArrows = [],
+  onLiveMove,
 }) => {
   const [retryBoardFen, setRetryBoardFen] = useState<string>(fen || START_FEN);
   const [retryMessage, setRetryMessage] = useState<string>('');
@@ -94,6 +101,10 @@ export const ChessboardArea: React.FC<ChessboardAreaProps> = ({
 
   // Build tactical visual arrows for the board
   const customArrows = useMemo<Arrow[]>(() => {
+    if (isLiveMode) {
+      return liveCandidateArrows;
+    }
+
     const arrows: Arrow[] = [];
 
     if (isRetryMode) {
@@ -130,10 +141,20 @@ export const ChessboardArea: React.FC<ChessboardAreaProps> = ({
     }
 
     return arrows;
-  }, [currentMove, showEngineArrow, isRetryMode, showHint]);
+  }, [currentMove, showEngineArrow, isRetryMode, showHint, isLiveMode, liveCandidateArrows]);
 
-  // Handle piece drop in Retry Mistake mode
+  // Handle piece drop in Retry Mistake mode or Live Sandbox mode
   const handlePieceDrop = ({ sourceSquare, targetSquare, piece }: PieceDropHandlerArgs): boolean => {
+    if (isLiveMode && onLiveMove && targetSquare) {
+      const pieceType = piece?.pieceType || '';
+      const promotion = pieceType.toLowerCase() === 'p' ? 'q' : undefined;
+      const success = onLiveMove(sourceSquare as Square, targetSquare as Square, promotion);
+      if (success) {
+        playSound('move');
+      }
+      return success;
+    }
+
     if (!isRetryMode || !currentMove || !targetSquare) return false;
 
     try {
@@ -174,7 +195,7 @@ export const ChessboardArea: React.FC<ChessboardAreaProps> = ({
   const customSquareStyles = useMemo(() => {
     const styles: Record<string, React.CSSProperties> = {};
 
-    if (!isRetryMode && currentMove && currentMove.to) {
+    if (!isLiveMode && !isRetryMode && currentMove && currentMove.to) {
       const config = CLASSIFICATION_CONFIG[currentMove.classification];
       if (config) {
         styles[currentMove.to] = {
@@ -184,7 +205,7 @@ export const ChessboardArea: React.FC<ChessboardAreaProps> = ({
     }
 
     return styles;
-  }, [currentMove, isRetryMode]);
+  }, [currentMove, isRetryMode, isLiveMode]);
 
   const activePosition = (isRetryMode ? retryBoardFen : fen) || START_FEN;
 
@@ -226,7 +247,7 @@ export const ChessboardArea: React.FC<ChessboardAreaProps> = ({
           options={{
             position: activePosition,
             boardOrientation: orientation,
-            allowDragging: isRetryMode,
+            allowDragging: isRetryMode || isLiveMode,
             onPieceDrop: handlePieceDrop,
             arrows: customArrows,
             squareStyles: customSquareStyles,
@@ -240,8 +261,8 @@ export const ChessboardArea: React.FC<ChessboardAreaProps> = ({
           }}
         />
 
-        {/* Move Classification Badge Overlay on Target Square */}
-        {!isRetryMode && currentMove && currentMove.to && (
+        {/* Move Classification Badge Overlay on Target Square (Game Review mode only) */}
+        {!isLiveMode && !isRetryMode && currentMove && currentMove.to && (
           <TargetSquareBadge
             key={`${currentMove.ply}-${currentMove.to}-${currentMove.classification}`}
             square={currentMove.to as Square}
@@ -275,9 +296,16 @@ export const ChessboardArea: React.FC<ChessboardAreaProps> = ({
           )}
         </div>
 
-        {currentMove && (
+        {!isLiveMode && currentMove && (
           <div className="font-mono text-zinc-400">
             {currentMove.turn === 'w' ? 'White' : 'Black'} played <span className="font-bold text-zinc-200">{currentMove.san}</span>
+          </div>
+        )}
+
+        {isLiveMode && (
+          <div className="font-mono text-xs text-emerald-400 font-semibold flex items-center gap-1">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+            <span>Live Analysis Sandbox</span>
           </div>
         )}
       </div>

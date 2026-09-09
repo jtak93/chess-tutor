@@ -96,6 +96,45 @@ Keep it punchy, instructive, and directly referencing key squares (e.g. f3, f2, 
   }
 
   /**
+   * Generates coaching advice on an arbitrary custom position / sandbox setup.
+   */
+  public async explainCustomPosition(
+    fen: string,
+    topMoveText: string = '',
+    persona: CoachPersona = 'grandmaster',
+    apiKey?: string
+  ): Promise<string> {
+    const client = this.getClient(apiKey);
+    if (!client) {
+      return 'Enter your Gemini API Key in Settings to enable live AI Coach advice for custom positions.';
+    }
+
+    const personaInstructions = PERSONA_PROMPTS[persona] || PERSONA_PROMPTS.grandmaster;
+    const prompt = `${personaInstructions}
+
+Current Custom Chess Position:
+- FEN: ${fen}
+${topMoveText ? `- Engine Candidate Analysis: ${topMoveText}` : ''}
+
+Provide a 2-3 sentence strategic explanation for the student:
+1. Assess which side has the initiative or advantage and why.
+2. Outline the immediate threats, weak squares, and the best plan for the side to move.
+Keep it punchy, instructive, and under 70 words.`;
+
+    try {
+      const response = await client.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: prompt,
+      });
+
+      return response.text || 'Focus on piece coordination, controlling open files, and king safety.';
+    } catch (err) {
+      console.error('Gemini custom position explanation error:', err);
+      return 'Focus on active piece development and controlling central squares.';
+    }
+  }
+
+  /**
    * Interactive Q&A with the Coach for any question regarding the board.
    */
   public async askCoachQuestion(

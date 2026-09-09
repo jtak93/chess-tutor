@@ -96,3 +96,41 @@ export interface CoachMessage {
   text: string;
   timestamp: number;
 }
+
+export interface LiveEngineLine {
+  rank: number; // 1, 2, 3
+  uci: string;
+  san: string;
+  eval: EngineEval;
+  pvSan: string[];
+}
+
+export interface LiveAnalysisUpdate {
+  fen: string;
+  depth: number;
+  maxDepth: number;
+  nodes: number;
+  nps: number;
+  topLines: LiveEngineLine[];
+  bestMoveUci: string;
+  bestMoveSan: string;
+  evaluation: EngineEval;
+  isSearching: boolean;
+}
+
+export interface LiveMoveItem {
+  ply: number;
+  moveNumber: number;
+  turn: 'w' | 'b';
+  san: string;
+  uci: string;
+  from: string;
+  to: string;
+  piece: string;
+  captured?: string;
+  promotion?: string;
+  fenBefore: string;
+  fenAfter: string;
+  eval?: EngineEval;
+  classification?: MoveClassification;
+}
