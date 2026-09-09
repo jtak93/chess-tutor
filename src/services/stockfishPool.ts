@@ -279,9 +279,12 @@ export class StockfishWorkerPool {
     let queueIdx = 0;
 
     const runWorkerLoop = async (inst: WorkerInstance) => {
-      while (queueIdx < uncachedIndices.length) {
+      while (true) {
+        if (queueIdx >= uncachedIndices.length) break;
         const taskIndex = uncachedIndices[queueIdx++];
+        if (taskIndex === undefined || taskIndex >= normalizedTasks.length) break;
         const task = normalizedTasks[taskIndex];
+        if (!task) break;
 
         const res = await new Promise<PositionEvaluationResult>((resolve) => {
           inst.busy = true;
