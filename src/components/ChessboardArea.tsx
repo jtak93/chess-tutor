@@ -29,7 +29,8 @@ interface ChessboardAreaProps {
   onExitRetryMode?: () => void;
   soundEnabled?: boolean;
   onToggleSound?: () => void;
-  // Live Variation Props
+  // Live Variation & Studio Props
+  isLiveMode?: boolean;
   isVariationActive?: boolean;
   variationMoves?: string[];
   onExitVariation?: () => void;
@@ -47,6 +48,7 @@ export const ChessboardArea: React.FC<ChessboardAreaProps> = ({
   onExitRetryMode,
   soundEnabled = true,
   onToggleSound,
+  isLiveMode = false,
   isVariationActive = false,
   variationMoves = [],
   onExitVariation,
@@ -107,7 +109,7 @@ export const ChessboardArea: React.FC<ChessboardAreaProps> = ({
 
   // Build tactical visual arrows for the board
   const customArrows = useMemo<Arrow[]>(() => {
-    if (isVariationActive && liveCandidateArrows.length > 0) {
+    if ((isLiveMode || isVariationActive) && liveCandidateArrows.length > 0) {
       return liveCandidateArrows;
     }
 
@@ -122,7 +124,7 @@ export const ChessboardArea: React.FC<ChessboardAreaProps> = ({
       return arrows;
     }
 
-    if (!currentMove) {
+    if (!currentMove || isLiveMode) {
       return liveCandidateArrows.length > 0 ? liveCandidateArrows : arrows;
     }
 
@@ -152,7 +154,7 @@ export const ChessboardArea: React.FC<ChessboardAreaProps> = ({
     }
 
     return arrows;
-  }, [currentMove, showEngineArrow, isRetryMode, showHint, isVariationActive, liveCandidateArrows]);
+  }, [currentMove, showEngineArrow, isRetryMode, showHint, isVariationActive, isLiveMode, liveCandidateArrows]);
 
   // Handle piece drop across Retry, Variation, and Free drag modes
   const handlePieceDrop = ({ sourceSquare, targetSquare, piece }: PieceDropHandlerArgs): boolean => {

@@ -47,19 +47,19 @@ import {
   Activity,
   Bot,
   ListOrdered,
+  ExternalLink,
+  BookOpen,
 } from 'lucide-react';
 
 const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 
+type ViewMode = 'review' | 'live_studio';
 type RightPanelTab = 'coach' | 'engine' | 'moves';
 
-interface ActiveVariationState {
-  basePly: number;
-  moves: LiveMoveItem[];
-  currentFen: string;
-}
-
 export const App: React.FC = () => {
+  // Mode: 'review' (Game Review with tabs) OR 'live_studio' (Dedicated Live Analysis Studio)
+  const [viewMode, setViewMode] = useState<ViewMode>('review');
+
   // Review Report State
   const [report, setReport] = useState<GameReviewReport | null>(null);
   const [currentPly, setCurrentPly] = useState<number>(-1);
@@ -67,16 +67,18 @@ export const App: React.FC = () => {
   const [orientation, setOrientation] = useState<'white' | 'black'>('white');
   const [isRetryMode, setIsRetryMode] = useState<boolean>(false);
 
-  // Right Panel Tab Selection: 'coach' | 'engine' | 'moves'
-  const [activeTab, setActiveTab] = useState<RightPanelTab>('coach');
+  // Review Right Panel Tab: 'coach' | 'engine' | 'moves'
+  const [reviewTab, setReviewTab] = useState<RightPanelTab>('coach');
 
   // Guided Key Moments Walkthrough state
   const [isKeyMomentsMode, setIsKeyMomentsMode] = useState<boolean>(false);
   const [keyMomentIndex, setKeyMomentIndex] = useState<number>(0);
   const [keyMomentSolved, setKeyMomentSolved] = useState<boolean>(false);
 
-  // Live Variation State (When user drags pieces on the board to test alternative lines)
-  const [activeVariation, setActiveVariation] = useState<ActiveVariationState | null>(null);
+  // Dedicated Live Studio State (Transported from review or custom)
+  const [studioFen, setStudioFen] = useState<string>(START_FEN);
+  const [studioMoves, setStudioMoves] = useState<LiveMoveItem[]>([]);
+  const [transportedPly, setTransportedPly] = useState<number | null>(null);
   const [liveAnalysis, setLiveAnalysis] = useState<LiveAnalysisUpdate | null>(null);
   const [isPlayEngineMode, setIsPlayEngineMode] = useState<boolean>(false);
 
@@ -109,7 +111,7 @@ export const App: React.FC = () => {
     );
   }, [report]);
 
-  // Determine current active FEN (either variation FEN or game move FEN)
+  // Determine game move FEN
   const gameFen = useMemo(() => {
     if (!report || !report.moves || report.moves.length === 0) return START_FEN;
     if (currentPly <= -1) return report.moves[0]?.fenBefore || START_FEN;
@@ -117,29 +119,29 @@ export const App: React.FC = () => {
     return report.moves[safePly]?.fenAfter || START_FEN;
   }, [report, currentPly]);
 
-  const activeFen = activeVariation ? activeVariation.currentFen : gameFen;
+  const activeFen = viewMode === 'live_studio' ? studioFen : gameFen;
 
-  // Stream Live Engine analysis for active position whenever engine tab is open or variation is being explored
+  // Start continuous streaming live analysis whenever studio mode is open or engine tab is selected
   useEffect(() => {
-    if (activeVariation || activeTab === 'engine' || !report) {
+    if (viewMode === 'live_studio' || reviewTab === 'engine' || !report) {
       liveEngine.startAnalysis(activeFen, 18, (update) => {
         setLiveAnalysis(update);
       });
     } else {
       liveEngine.stop();
     }
-  }, [activeFen, activeVariation, activeTab, report]);
+  }, [activeFen, viewMode, reviewTab, report]);
 
-  // Handle Play Against Engine in live variations
+  // Handle Play Against Engine in live studio mode
   useEffect(() => {
-    if (activeVariation && isPlayEngineMode && liveAnalysis && !liveAnalysis.isSearching && liveAnalysis.bestMoveUci) {
-      const turn = activeVariation.currentFen.split(' ')[1] as 'w' | 'b';
+    if (viewMode === 'live_studio' && isPlayEngineMode && liveAnalysis && !liveAnalysis.isSearching && liveAnalysis.bestMoveUci) {
+      const turn = studioFen.split(' ')[1] as 'w' | 'b';
       const playerColor = orientation === 'white' ? 'w' : 'b';
 
       if (turn !== playerColor && liveAnalysis.bestMoveUci.length >= 4) {
         const timer = setTimeout(() => {
           try {
-            const chess = new Chess(activeVariation.currentFen);
+            const chess = new Chess(studioFen);
             const from = liveAnalysis.bestMoveUci.substring(0, 2) as Square;
             const to = liveAnalysis.bestMoveUci.substring(2, 4) as Square;
             const promotion = liveAnalysis.bestMoveUci.length > 4 ? liveAnalysis.bestMoveUci[4] : undefined;
@@ -147,11 +149,12 @@ export const App: React.FC = () => {
             const move = chess.move({ from, to, promotion });
             if (move) {
               const newFen = chess.fen();
-              const newMoves: LiveMoveItem[] = [
-                ...activeVariation.moves,
+              setStudioFen(newFen);
+              setStudioMoves((prev) => [
+                ...prev,
                 {
-                  ply: activeVariation.moves.length,
-                  moveNumber: Math.floor(activeVariation.moves.length / 2) + 1,
+                  ply: prev.length,
+                  moveNumber: Math.floor(prev.length / 2) + 1,
                   turn: move.color,
                   san: move.san,
                   uci: liveAnalysis.bestMoveUci,
@@ -160,16 +163,10 @@ export const App: React.FC = () => {
                   piece: move.piece,
                   captured: move.captured,
                   promotion: move.promotion,
-                  fenBefore: activeVariation.currentFen,
+                  fenBefore: studioFen,
                   fenAfter: newFen,
                 },
-              ];
-
-              setActiveVariation({
-                basePly: activeVariation.basePly,
-                moves: newMoves,
-                currentFen: newFen,
-              });
+              ]);
             }
           } catch {
             // Ignore
@@ -179,11 +176,19 @@ export const App: React.FC = () => {
         return () => clearTimeout(timer);
       }
     }
-  }, [activeVariation, isPlayEngineMode, liveAnalysis, orientation]);
+  }, [viewMode, isPlayEngineMode, liveAnalysis, studioFen, orientation]);
+
+  // Transport Current Position from Game Review into Live Studio
+  const handleTransportToLiveStudio = useCallback(() => {
+    setStudioFen(gameFen);
+    setStudioMoves([]);
+    setTransportedPly(currentPly);
+    setViewMode('live_studio');
+  }, [gameFen, currentPly]);
 
   const handleLoadAndAnalyzePgn = useCallback(
     async (pgn: string, forceReanalyze: boolean = false) => {
-      setActiveVariation(null);
+      setViewMode('review');
       setIsKeyMomentsMode(false);
 
       if (!forceReanalyze) {
@@ -234,7 +239,7 @@ export const App: React.FC = () => {
           setIsRetryMode(false);
           setIsPlaying(false);
           setIsKeyMomentsMode(false);
-          setActiveVariation(null);
+          setViewMode('review');
         }
       }
     } catch (err) {
@@ -244,7 +249,7 @@ export const App: React.FC = () => {
 
   const handleStartKeyMoments = useCallback(() => {
     if (keyMoments.length === 0) return;
-    setActiveVariation(null);
+    setViewMode('review');
     setIsKeyMomentsMode(true);
     setKeyMomentIndex(0);
     setKeyMomentSolved(false);
@@ -259,7 +264,6 @@ export const App: React.FC = () => {
   const handleSelectKeyMomentIndex = useCallback(
     (index: number) => {
       if (index < 0 || index >= keyMoments.length) return;
-      setActiveVariation(null);
       setKeyMomentIndex(index);
       setKeyMomentSolved(false);
 
@@ -276,7 +280,6 @@ export const App: React.FC = () => {
     setIsPlaying(false);
     setIsRetryMode(false);
     setIsKeyMomentsMode(false);
-    setActiveVariation(null);
     setCurrentPly(-1);
   }, []);
 
@@ -284,47 +287,28 @@ export const App: React.FC = () => {
     setIsPlaying(false);
     setIsRetryMode(false);
     setIsKeyMomentsMode(false);
-    if (activeVariation) {
-      if (activeVariation.moves.length > 1) {
-        const trimmed = activeVariation.moves.slice(0, -1);
-        const last = trimmed[trimmed.length - 1];
-        setActiveVariation({
-          basePly: activeVariation.basePly,
-          moves: trimmed,
-          currentFen: last.fenAfter,
-        });
-      } else {
-        setActiveVariation(null);
-      }
-      return;
-    }
     setCurrentPly((prev) => Math.max(-1, prev - 1));
-  }, [activeVariation]);
+  }, []);
 
   const handleNextMove = useCallback(() => {
     setIsPlaying(false);
     setIsRetryMode(false);
     setIsKeyMomentsMode(false);
-    if (activeVariation) {
-      setActiveVariation(null);
-    }
     if (report && report.moves) {
       setCurrentPly((prev) => Math.min(report.moves.length - 1, prev + 1));
     }
-  }, [report, activeVariation]);
+  }, [report]);
 
   const handleLastMove = useCallback(() => {
     setIsPlaying(false);
     setIsRetryMode(false);
     setIsKeyMomentsMode(false);
-    setActiveVariation(null);
     if (report && report.moves) {
       setCurrentPly(report.moves.length - 1);
     }
   }, [report]);
 
   const handleTogglePlay = useCallback(() => {
-    setActiveVariation(null);
     setIsPlaying((prev) => !prev);
   }, []);
 
@@ -332,15 +316,14 @@ export const App: React.FC = () => {
     setIsPlaying(false);
     setIsRetryMode(false);
     setIsKeyMomentsMode(false);
-    setActiveVariation(null);
     setCurrentPly(ply);
   }, []);
 
-  // Handle piece drop on board: if move matches next game move, step forward; otherwise, explore variation live!
+  // Piece drop handler for both modes
   const handlePieceDropAction = useCallback(
     (source: Square, target: Square, promotion?: string): boolean => {
       try {
-        const boardFen = activeVariation ? activeVariation.currentFen : gameFen;
+        const boardFen = viewMode === 'live_studio' ? studioFen : gameFen;
         const chess = new Chess(boardFen);
         const move = chess.move({
           from: source,
@@ -353,46 +336,63 @@ export const App: React.FC = () => {
         const nextFen = chess.fen();
         const playedUci = `${source}${target}${promotion || ''}`;
 
-        // Check if move matches the actual game's next move
+        if (viewMode === 'live_studio') {
+          setStudioFen(nextFen);
+          setStudioMoves((prev) => [
+            ...prev,
+            {
+              ply: prev.length,
+              moveNumber: Math.floor(prev.length / 2) + 1,
+              turn: move.color,
+              san: move.san,
+              uci: playedUci,
+              from: source,
+              to: target,
+              piece: move.piece,
+              captured: move.captured,
+              promotion: move.promotion,
+              fenBefore: boardFen,
+              fenAfter: nextFen,
+            },
+          ]);
+          return true;
+        }
+
+        // In Review Mode: If move matches next move in game, advance game move
         const nextGameMove = report && currentPly + 1 < report.moves.length ? report.moves[currentPly + 1] : null;
-        if (!activeVariation && nextGameMove && (nextGameMove.uci === playedUci || nextGameMove.san === move.san)) {
+        if (nextGameMove && (nextGameMove.uci === playedUci || nextGameMove.san === move.san)) {
           setCurrentPly((prev) => prev + 1);
           return true;
         }
 
-        // Otherwise: Create or append to the live variation branch!
-        const newMoveItem: LiveMoveItem = {
-          ply: activeVariation ? activeVariation.moves.length : 0,
-          moveNumber: Math.floor((activeVariation ? activeVariation.moves.length : 0) / 2) + 1,
-          turn: move.color,
-          san: move.san,
-          uci: playedUci,
-          from: source,
-          to: target,
-          piece: move.piece,
-          captured: move.captured,
-          promotion: move.promotion,
-          fenBefore: boardFen,
-          fenAfter: nextFen,
-        };
-
-        setActiveVariation((prev) => ({
-          basePly: prev ? prev.basePly : currentPly,
-          moves: prev ? [...prev.moves, newMoveItem] : [newMoveItem],
-          currentFen: nextFen,
-        }));
-
-        // Automatically open engine lines tab so the user sees live calculation
-        setActiveTab('engine');
+        // Otherwise: Promptly transport into Live Studio with this new move!
+        setStudioFen(nextFen);
+        setStudioMoves([
+          {
+            ply: 0,
+            moveNumber: Math.floor(Math.max(0, currentPly) / 2) + 1,
+            turn: move.color,
+            san: move.san,
+            uci: playedUci,
+            from: source,
+            to: target,
+            piece: move.piece,
+            captured: move.captured,
+            promotion: move.promotion,
+            fenBefore: boardFen,
+            fenAfter: nextFen,
+          },
+        ]);
+        setTransportedPly(currentPly);
+        setViewMode('live_studio');
         return true;
       } catch {
         return false;
       }
     },
-    [activeVariation, gameFen, report, currentPly]
+    [viewMode, studioFen, gameFen, report, currentPly]
   );
 
-  // Play a candidate preview line
   const handlePreviewLiveLine = useCallback(
     (line: LiveEngineLine) => {
       if (!line.uci || line.uci.length < 4) return;
@@ -476,37 +476,41 @@ export const App: React.FC = () => {
         return;
       }
 
-      if (e.key === 'ArrowLeft') {
-        e.preventDefault();
-        handlePrevMove();
-      } else if (e.key === 'ArrowRight') {
-        e.preventDefault();
-        handleNextMove();
-      } else if (e.key === 'ArrowUp') {
-        e.preventDefault();
-        handleFirstMove();
-      } else if (e.key === 'ArrowDown') {
-        e.preventDefault();
-        handleLastMove();
-      } else if (e.key === ' ') {
-        e.preventDefault();
-        handleTogglePlay();
-      } else if (e.key.toLowerCase() === 'x') {
+      if (viewMode === 'review') {
+        if (e.key === 'ArrowLeft') {
+          e.preventDefault();
+          handlePrevMove();
+        } else if (e.key === 'ArrowRight') {
+          e.preventDefault();
+          handleNextMove();
+        } else if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          handleFirstMove();
+        } else if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          handleLastMove();
+        } else if (e.key === ' ') {
+          e.preventDefault();
+          handleTogglePlay();
+        }
+      }
+
+      if (e.key.toLowerCase() === 'x') {
         setOrientation((prev) => (prev === 'white' ? 'black' : 'white'));
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handlePrevMove, handleNextMove, handleFirstMove, handleLastMove, handleTogglePlay]);
+  }, [viewMode, handlePrevMove, handleNextMove, handleFirstMove, handleLastMove, handleTogglePlay]);
 
   const currentMove =
-    !activeVariation && report && report.moves && currentPly >= 0 && currentPly < report.moves.length
+    viewMode === 'review' && report && report.moves && currentPly >= 0 && currentPly < report.moves.length
       ? report.moves[currentPly]
       : null;
 
   const currentEval = (() => {
-    if (activeVariation && liveAnalysis?.evaluation) {
+    if (viewMode === 'live_studio' && liveAnalysis?.evaluation) {
       return liveAnalysis.evaluation;
     }
     if (!report || !report.moves || report.moves.length === 0) {
@@ -518,8 +522,6 @@ export const App: React.FC = () => {
     const safePly = Math.min(report.moves.length - 1, Math.max(0, currentPly));
     return report.moves[safePly]?.evalAfter || { type: 'cp' as const, value: 0, whiteValue: 0, depth: 0 };
   })();
-
-  const variationMoveSans = activeVariation ? activeVariation.moves.map((m) => m.san) : [];
 
   return (
     <ErrorBoundary>
@@ -538,6 +540,37 @@ export const App: React.FC = () => {
                 </span>
               </h1>
             </div>
+          </div>
+
+          {/* Mode Switcher Tabs */}
+          <div className="flex items-center bg-zinc-850 p-1 rounded-xl border border-zinc-700/80">
+            <button
+              onClick={() => setViewMode('review')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all ${
+                viewMode === 'review'
+                  ? 'bg-emerald-600 text-white shadow-md'
+                  : 'text-zinc-400 hover:text-zinc-200'
+              }`}
+            >
+              <BookOpen size={13} />
+              <span>Game Review</span>
+            </button>
+
+            <button
+              onClick={() => {
+                if (viewMode !== 'live_studio') {
+                  handleTransportToLiveStudio();
+                }
+              }}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all ${
+                viewMode === 'live_studio'
+                  ? 'bg-emerald-600 text-white shadow-md'
+                  : 'text-zinc-400 hover:text-zinc-200'
+              }`}
+            >
+              <Activity size={13} className={viewMode === 'live_studio' ? 'animate-pulse' : ''} />
+              <span>Live Studio</span>
+            </button>
           </div>
 
           {/* Quick Sample Selector & Action Buttons */}
@@ -582,17 +615,62 @@ export const App: React.FC = () => {
 
         {/* Main Workspace Layout */}
         <main className="flex-1 max-w-7xl w-full mx-auto p-2 sm:p-4 flex flex-col gap-3">
-          {/* Game Header with Players, Accuracy, and Performance ELO */}
-          <GameReviewHeader
-            report={report}
-            onOpenSummary={() => setIsSummaryModalOpen(true)}
-            onOpenImport={() => setIsImportModalOpen(true)}
-            onStartKeyMoments={handleStartKeyMoments}
-            isKeyMomentsActive={isKeyMomentsMode}
-          />
+          {/* Header Bar */}
+          {viewMode === 'review' ? (
+            <GameReviewHeader
+              report={report}
+              onOpenSummary={() => setIsSummaryModalOpen(true)}
+              onOpenImport={() => setIsImportModalOpen(true)}
+              onStartKeyMoments={handleStartKeyMoments}
+              isKeyMomentsActive={isKeyMomentsMode}
+            />
+          ) : (
+            /* Live Studio Transport Header */
+            <div className="w-full bg-[#1e1d1a] border border-emerald-500/50 rounded-xl p-3 shadow-md flex flex-col sm:flex-row items-center justify-between gap-2.5 animate-fadeIn">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-lg bg-emerald-500/20 text-emerald-400">
+                  <Activity size={18} className="animate-spin" />
+                </div>
+                <div>
+                  <div className="text-sm font-bold text-zinc-100 flex items-center gap-2">
+                    <span>Live Analysis Studio</span>
+                    {transportedPly !== null && (
+                      <span className="text-xs px-2 py-0.2 rounded bg-emerald-500/20 text-emerald-300 font-mono border border-emerald-500/30">
+                        Transported from Move {transportedPly >= 0 ? Math.floor(transportedPly / 2) + 1 : 'Start'}
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-xs text-zinc-400">
+                    Live streaming Stockfish depth {liveAnalysis?.depth || 0}/18 • Drag pieces to explore alternative lines on the fly.
+                  </div>
+                </div>
+              </div>
 
-          {/* Guided Key Moments Walkthrough Bar if Active */}
-          {isKeyMomentsMode && keyMoments.length > 0 && !activeVariation && (
+              <div className="flex items-center gap-2">
+                {report && (
+                  <button
+                    onClick={() => setViewMode('review')}
+                    className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-semibold border border-zinc-700 transition-colors shadow"
+                  >
+                    ⬅️ Return to Game Review
+                  </button>
+                )}
+                <button
+                  onClick={() => {
+                    setStudioFen(START_FEN);
+                    setStudioMoves([]);
+                    setTransportedPly(null);
+                  }}
+                  className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold shadow transition-colors"
+                >
+                  New Clean Board
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Guided Key Moments Walkthrough Bar if Active in Review Mode */}
+          {viewMode === 'review' && isKeyMomentsMode && keyMoments.length > 0 && (
             <KeyMomentsBar
               keyMoments={keyMoments}
               currentIndex={keyMomentIndex}
@@ -608,7 +686,7 @@ export const App: React.FC = () => {
 
           {/* Board, Eval Bar, and Right Workspace Tabs */}
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 flex-1 items-start">
-            {/* Left Column: Eval Bar + Interactive Board (7 cols) */}
+            {/* Left Column: Eval Bar + Chessboard (7 cols) */}
             <div className="lg:col-span-7 flex flex-col items-center gap-2">
               <div className="flex items-center justify-center gap-2 sm:gap-3 w-full">
                 {/* Vertical Evaluation Bar */}
@@ -618,7 +696,7 @@ export const App: React.FC = () => {
                   height="h-[320px] sm:h-[480px] md:h-[520px]"
                 />
 
-                {/* Chessboard Area (Always interactive with live variation support) */}
+                {/* Chessboard Area */}
                 <ChessboardArea
                   currentMove={currentMove}
                   fen={activeFen}
@@ -631,80 +709,112 @@ export const App: React.FC = () => {
                   onExitRetryMode={() => setIsRetryMode(false)}
                   soundEnabled={soundEnabled}
                   onToggleSound={() => setSoundEnabled((prev) => !prev)}
-                  isVariationActive={Boolean(activeVariation)}
-                  variationMoves={variationMoveSans}
-                  onExitVariation={() => setActiveVariation(null)}
+                  isLiveMode={viewMode === 'live_studio'}
                   liveCandidateArrows={liveCandidateArrows}
                   onPieceDropAction={handlePieceDropAction}
                 />
               </div>
 
               {/* Playback & Navigation Controls */}
-              <div className="flex items-center justify-between w-full max-w-[540px] bg-[#1e1d1a] border border-zinc-800 p-2 rounded-xl shadow-md">
-                <div className="flex items-center gap-1 sm:gap-2">
-                  <button
-                    onClick={handleFirstMove}
-                    disabled={currentPly <= -1 && !activeVariation}
-                    className="p-2 rounded-lg hover:bg-zinc-800 disabled:opacity-30 text-zinc-300 transition-colors"
-                    title="First Move (Up Arrow)"
-                  >
-                    <ChevronsLeft size={18} />
-                  </button>
+              {viewMode === 'review' ? (
+                <div className="flex items-center justify-between w-full max-w-[540px] bg-[#1e1d1a] border border-zinc-800 p-2 rounded-xl shadow-md">
+                  <div className="flex items-center gap-1 sm:gap-2">
+                    <button
+                      onClick={handleFirstMove}
+                      disabled={currentPly <= -1}
+                      className="p-2 rounded-lg hover:bg-zinc-800 disabled:opacity-30 text-zinc-300 transition-colors"
+                      title="First Move (Up Arrow)"
+                    >
+                      <ChevronsLeft size={18} />
+                    </button>
 
-                  <button
-                    onClick={handlePrevMove}
-                    disabled={currentPly <= -1 && !activeVariation}
-                    className="p-2 rounded-lg hover:bg-zinc-800 disabled:opacity-30 text-zinc-300 transition-colors"
-                    title="Previous Move (Left Arrow)"
-                  >
-                    <ChevronLeft size={20} />
-                  </button>
+                    <button
+                      onClick={handlePrevMove}
+                      disabled={currentPly <= -1}
+                      className="p-2 rounded-lg hover:bg-zinc-800 disabled:opacity-30 text-zinc-300 transition-colors"
+                      title="Previous Move (Left Arrow)"
+                    >
+                      <ChevronLeft size={20} />
+                    </button>
 
-                  <button
-                    onClick={handleTogglePlay}
-                    disabled={!report}
-                    className="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white font-bold transition-all shadow hover:scale-105 flex items-center gap-1.5 text-xs"
-                    title="Play / Pause (Space)"
-                  >
-                    {isPlaying ? <Pause size={15} /> : <Play size={15} className="fill-white" />}
-                    <span>{isPlaying ? 'Pause' : 'Play'}</span>
-                  </button>
+                    <button
+                      onClick={handleTogglePlay}
+                      disabled={!report}
+                      className="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white font-bold transition-all shadow hover:scale-105 flex items-center gap-1.5 text-xs"
+                      title="Play / Pause (Space)"
+                    >
+                      {isPlaying ? <Pause size={15} /> : <Play size={15} className="fill-white" />}
+                      <span>{isPlaying ? 'Pause' : 'Play'}</span>
+                    </button>
 
-                  <button
-                    onClick={handleNextMove}
-                    disabled={!report || !report.moves || currentPly >= report.moves.length - 1}
-                    className="p-2 rounded-lg hover:bg-zinc-800 disabled:opacity-30 text-zinc-300 transition-colors"
-                    title="Next Move (Right Arrow)"
-                  >
-                    <ChevronRight size={20} />
-                  </button>
+                    <button
+                      onClick={handleNextMove}
+                      disabled={!report || !report.moves || currentPly >= report.moves.length - 1}
+                      className="p-2 rounded-lg hover:bg-zinc-800 disabled:opacity-30 text-zinc-300 transition-colors"
+                      title="Next Move (Right Arrow)"
+                    >
+                      <ChevronRight size={20} />
+                    </button>
 
+                    <button
+                      onClick={handleLastMove}
+                      disabled={!report || !report.moves || currentPly >= report.moves.length - 1}
+                      className="p-2 rounded-lg hover:bg-zinc-800 disabled:opacity-30 text-zinc-300 transition-colors"
+                      title="Last Move (Down Arrow)"
+                    >
+                      <ChevronsRight size={18} />
+                    </button>
+                  </div>
+
+                  {/* Transport to Live Studio Button */}
                   <button
-                    onClick={handleLastMove}
-                    disabled={!report || !report.moves || currentPly >= report.moves.length - 1}
-                    className="p-2 rounded-lg hover:bg-zinc-800 disabled:opacity-30 text-zinc-300 transition-colors"
-                    title="Last Move (Down Arrow)"
+                    onClick={handleTransportToLiveStudio}
+                    className="px-2.5 py-1.5 rounded-lg bg-emerald-950/40 hover:bg-emerald-900/60 text-emerald-300 text-xs font-bold flex items-center gap-1.5 border border-emerald-500/40 transition-all shadow hover:scale-105"
+                    title="Transport this board position to Live Analysis Studio"
                   >
-                    <ChevronsRight size={18} />
+                    <ExternalLink size={13} className="text-emerald-400" />
+                    <span>Transport to Live Board</span>
                   </button>
                 </div>
-
-                {activeVariation ? (
-                  <button
-                    onClick={() => setActiveVariation(null)}
-                    className="px-2.5 py-1 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold transition-colors shadow"
-                  >
-                    Back to Game Move
-                  </button>
-                ) : (
-                  <div className="text-[11px] text-zinc-400 font-mono hidden sm:block">
-                    Drag any piece to test what-if lines
+              ) : (
+                /* Live Studio Controls Bar */
+                <div className="flex items-center justify-between w-full max-w-[540px] bg-[#1e1d1a] border border-zinc-800 p-2 rounded-xl shadow-md text-xs text-zinc-400">
+                  <div className="flex items-center gap-2">
+                    <span className="font-semibold text-zinc-200">
+                      Moves in Sandbox: {studioMoves.length}
+                    </span>
+                    {studioMoves.length > 0 && (
+                      <span className="font-mono text-emerald-400">
+                        ({studioMoves.map((m) => m.san).slice(-4).join(' ')})
+                      </span>
+                    )}
                   </div>
-                )}
-              </div>
+
+                  <div className="flex items-center gap-2">
+                    {transportedPly !== null && (
+                      <button
+                        onClick={() => {
+                          setStudioFen(gameFen);
+                          setStudioMoves([]);
+                        }}
+                        className="px-2.5 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-medium border border-zinc-700 transition-colors"
+                        title="Reset sandbox to the original game position"
+                      >
+                        Reset to Game Move
+                      </button>
+                    )}
+                    <button
+                      onClick={() => setViewMode('review')}
+                      className="px-3 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold shadow transition-colors"
+                    >
+                      Done / Return
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {/* Evaluation Advantage Graph (Review Mode) */}
-              {report && report.moves && report.moves.length > 0 && (
+              {viewMode === 'review' && report && report.moves && report.moves.length > 0 && (
                 <div className="w-full max-w-[540px]">
                   <EvaluationGraph
                     moves={report.moves}
@@ -720,99 +830,120 @@ export const App: React.FC = () => {
               </div>
             </div>
 
-            {/* Right Column: Unified Right Workspace Tabs (5 cols) */}
+            {/* Right Column: Review Tabs OR Live Analysis Panel (5 cols) */}
             <div className="lg:col-span-5 flex flex-col gap-2 h-full">
-              {/* Workspace Navigation Tabs */}
-              <div className="flex items-center gap-1 bg-[#1e1d1a] border border-zinc-800 p-1 rounded-xl shadow">
-                <button
-                  onClick={() => setActiveTab('coach')}
-                  className={`flex-1 py-1.5 px-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-all ${
-                    activeTab === 'coach'
-                      ? 'bg-emerald-600 text-white shadow'
-                      : 'text-zinc-400 hover:text-zinc-200'
-                  }`}
-                >
-                  <Bot size={14} />
-                  <span>AI Coach</span>
-                </button>
-
-                <button
-                  onClick={() => setActiveTab('engine')}
-                  className={`flex-1 py-1.5 px-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-all ${
-                    activeTab === 'engine'
-                      ? 'bg-emerald-600 text-white shadow'
-                      : 'text-zinc-400 hover:text-zinc-200'
-                  }`}
-                >
-                  <Activity size={14} className={liveAnalysis?.isSearching ? 'animate-spin' : ''} />
-                  <span>Live Lines</span>
-                </button>
-
-                <button
-                  onClick={() => setActiveTab('moves')}
-                  className={`flex-1 py-1.5 px-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-all ${
-                    activeTab === 'moves'
-                      ? 'bg-emerald-600 text-white shadow'
-                      : 'text-zinc-400 hover:text-zinc-200'
-                  }`}
-                >
-                  <ListOrdered size={14} />
-                  <span>Moves {report ? `(${report.moves.length})` : ''}</span>
-                </button>
-              </div>
-
-              {/* Active Tab Panel Content */}
-              <div className="min-h-[460px] sm:min-h-[520px]">
-                {activeTab === 'coach' && (
-                  <CoachPanel
-                    currentMove={currentMove}
-                    currentFen={activeFen}
-                    persona={persona}
-                    onRetryMove={() => setIsRetryMode(true)}
-                  />
-                )}
-
-                {activeTab === 'engine' && (
+              {viewMode === 'live_studio' ? (
+                /* Live Studio Panel */
+                <div className="min-h-[500px]">
                   <LiveAnalysisPanel
                     analysis={liveAnalysis}
-                    currentFen={activeFen}
+                    currentFen={studioFen}
                     onPreviewLine={handlePreviewLiveLine}
                     persona={persona}
-                    onResetToStart={() => setActiveVariation(null)}
+                    onResetToStart={() => {
+                      setStudioFen(START_FEN);
+                      setStudioMoves([]);
+                      setTransportedPly(null);
+                    }}
                     isPlayEngineMode={isPlayEngineMode}
                     onTogglePlayEngine={() => setIsPlayEngineMode((prev) => !prev)}
                   />
-                )}
+                </div>
+              ) : (
+                /* Game Review Workspace Tabs */
+                <>
+                  <div className="flex items-center gap-1 bg-[#1e1d1a] border border-zinc-800 p-1 rounded-xl shadow">
+                    <button
+                      onClick={() => setReviewTab('coach')}
+                      className={`flex-1 py-1.5 px-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-all ${
+                        reviewTab === 'coach'
+                          ? 'bg-emerald-600 text-white shadow'
+                          : 'text-zinc-400 hover:text-zinc-200'
+                      }`}
+                    >
+                      <Bot size={14} />
+                      <span>AI Coach</span>
+                    </button>
 
-                {activeTab === 'moves' && (
-                  report && report.moves ? (
-                    <MoveList
-                      moves={report.moves}
-                      currentPly={currentPly}
-                      onSelectPly={handleSelectPly}
-                    />
-                  ) : (
-                    <div className="h-full bg-[#1e1d1a] border border-zinc-800 rounded-xl p-5 flex flex-col items-center justify-center text-center space-y-3 shadow-md">
-                      <div className="w-10 h-10 rounded-full bg-zinc-800 flex items-center justify-center text-zinc-400">
-                        <Gamepad2 size={20} />
-                      </div>
-                      <div>
-                        <div className="text-xs font-bold text-zinc-200">No Game Loaded</div>
-                        <div className="text-[11px] text-zinc-500 mt-0.5">
-                          Import a PGN to view the full move review table.
+                    <button
+                      onClick={() => setReviewTab('engine')}
+                      className={`flex-1 py-1.5 px-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-all ${
+                        reviewTab === 'engine'
+                          ? 'bg-emerald-600 text-white shadow'
+                          : 'text-zinc-400 hover:text-zinc-200'
+                      }`}
+                    >
+                      <Activity size={14} className={liveAnalysis?.isSearching ? 'animate-spin' : ''} />
+                      <span>Live Lines</span>
+                    </button>
+
+                    <button
+                      onClick={() => setReviewTab('moves')}
+                      className={`flex-1 py-1.5 px-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-all ${
+                        reviewTab === 'moves'
+                          ? 'bg-emerald-600 text-white shadow'
+                          : 'text-zinc-400 hover:text-zinc-200'
+                      }`}
+                    >
+                      <ListOrdered size={14} />
+                      <span>Moves {report ? `(${report.moves.length})` : ''}</span>
+                    </button>
+                  </div>
+
+                  {/* Active Review Tab Content */}
+                  <div className="min-h-[460px] sm:min-h-[520px]">
+                    {reviewTab === 'coach' && (
+                      <CoachPanel
+                        currentMove={currentMove}
+                        currentFen={activeFen}
+                        persona={persona}
+                        onRetryMove={() => setIsRetryMode(true)}
+                      />
+                    )}
+
+                    {reviewTab === 'engine' && (
+                      <LiveAnalysisPanel
+                        analysis={liveAnalysis}
+                        currentFen={activeFen}
+                        onPreviewLine={handlePreviewLiveLine}
+                        persona={persona}
+                        onResetToStart={handleTransportToLiveStudio}
+                        isPlayEngineMode={isPlayEngineMode}
+                        onTogglePlayEngine={() => setIsPlayEngineMode((prev) => !prev)}
+                      />
+                    )}
+
+                    {reviewTab === 'moves' && (
+                      report && report.moves ? (
+                        <MoveList
+                          moves={report.moves}
+                          currentPly={currentPly}
+                          onSelectPly={handleSelectPly}
+                        />
+                      ) : (
+                        <div className="h-full bg-[#1e1d1a] border border-zinc-800 rounded-xl p-5 flex flex-col items-center justify-center text-center space-y-3 shadow-md">
+                          <div className="w-10 h-10 rounded-full bg-zinc-800 flex items-center justify-center text-zinc-400">
+                            <Gamepad2 size={20} />
+                          </div>
+                          <div>
+                            <div className="text-xs font-bold text-zinc-200">No Game Loaded</div>
+                            <div className="text-[11px] text-zinc-500 mt-0.5">
+                              Import a PGN to view the full move review table.
+                            </div>
+                          </div>
+                          <button
+                            onClick={() => handleLoadAndAnalyzePgn(SAMPLE_GAMES[0].pgn)}
+                            className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium border border-zinc-700 flex items-center gap-1 transition-colors"
+                          >
+                            <Sparkles size={12} className="text-emerald-400" />
+                            Review User Game
+                          </button>
                         </div>
-                      </div>
-                      <button
-                        onClick={() => handleLoadAndAnalyzePgn(SAMPLE_GAMES[0].pgn)}
-                        className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium border border-zinc-700 flex items-center gap-1 transition-colors"
-                      >
-                        <Sparkles size={12} className="text-emerald-400" />
-                        Review User Game
-                      </button>
-                    </div>
-                  )
-                )}
-              </div>
+                      )
+                    )}
+                  </div>
+                </>
+              )}
             </div>
           </div>
         </main>
