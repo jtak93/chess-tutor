@@ -16,6 +16,10 @@ import { ImportGameModal } from './components/ImportGameModal';
 import { SettingsModal } from './components/SettingsModal';
 import { AnalysisLoadingModal } from './components/AnalysisLoadingModal';
 import { KeyMomentsBar } from './components/KeyMomentsBar';
+import { AdBanner } from './components/AdBanner';
+import { Footer } from './components/Footer';
+import { PrivacyPolicyModal } from './components/PrivacyPolicyModal';
+import { TermsModal } from './components/TermsModal';
 import { ErrorBoundary } from './components/ErrorBoundary';
 
 import {
@@ -49,6 +53,8 @@ export const App: React.FC = () => {
   const [isImportModalOpen, setIsImportModalOpen] = useState<boolean>(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState<boolean>(false);
   const [isSummaryModalOpen, setIsSummaryModalOpen] = useState<boolean>(false);
+  const [isPrivacyModalOpen, setIsPrivacyModalOpen] = useState<boolean>(false);
+  const [isTermsModalOpen, setIsTermsModalOpen] = useState<boolean>(false);
 
   // Engine & Coach settings
   const [persona, setPersona] = useState<CoachPersona>(getStoredPersona());
@@ -205,16 +211,18 @@ export const App: React.FC = () => {
   // Handle browser back button / popstate gracefully
   useEffect(() => {
     const handlePopState = () => {
-      if (isImportModalOpen || isSettingsModalOpen || isSummaryModalOpen) {
+      if (isImportModalOpen || isSettingsModalOpen || isSummaryModalOpen || isPrivacyModalOpen || isTermsModalOpen) {
         setIsImportModalOpen(false);
         setIsSettingsModalOpen(false);
         setIsSummaryModalOpen(false);
+        setIsPrivacyModalOpen(false);
+        setIsTermsModalOpen(false);
       }
     };
 
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
-  }, [isImportModalOpen, isSettingsModalOpen, isSummaryModalOpen]);
+  }, [isImportModalOpen, isSettingsModalOpen, isSummaryModalOpen, isPrivacyModalOpen, isTermsModalOpen]);
 
   useEffect(() => {
     if (isPlaying && report && report.moves) {
@@ -466,6 +474,11 @@ export const App: React.FC = () => {
                   />
                 </div>
               )}
+
+              {/* Leaderboard Ad Slot below Advantage Graph */}
+              <div className="w-full max-w-[540px] pt-1">
+                <AdBanner format="horizontal" />
+              </div>
             </div>
 
             {/* Right Column: Move List & AI Coach Panel (5 cols on large screens) */}
@@ -521,6 +534,12 @@ export const App: React.FC = () => {
           </div>
         </main>
 
+        {/* Footer with Privacy Policy & Terms */}
+        <Footer
+          onOpenPrivacy={() => setIsPrivacyModalOpen(true)}
+          onOpenTerms={() => setIsTermsModalOpen(true)}
+        />
+
         {/* Modals */}
         <ImportGameModal
           isOpen={isImportModalOpen}
@@ -557,6 +576,16 @@ export const App: React.FC = () => {
           progress={analysisProgress}
           currentPly={currentAnalyzingPly}
           totalPlies={totalAnalyzingPlies}
+        />
+
+        <PrivacyPolicyModal
+          isOpen={isPrivacyModalOpen}
+          onClose={() => setIsPrivacyModalOpen(false)}
+        />
+
+        <TermsModal
+          isOpen={isTermsModalOpen}
+          onClose={() => setIsTermsModalOpen(false)}
         />
       </div>
     </ErrorBoundary>

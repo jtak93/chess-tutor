@@ -1,6 +1,7 @@
 import React from 'react';
 import type { GameReviewReport, MoveClassification } from '../types/chess';
 import { BadgeIcon, CLASSIFICATION_CONFIG } from './BadgeIcon';
+import { AdBanner } from './AdBanner';
 import { X, Award, Sparkles, Trophy, Play } from 'lucide-react';
 
 interface GameReviewSummaryProps {
@@ -214,6 +215,11 @@ export const GameReviewSummary: React.FC<GameReviewSummaryProps> = ({
               </div>
             </div>
           )}
+
+          {/* Ad Slot in Modal */}
+          <div className="pt-2">
+            <AdBanner format="responsive" />
+          </div>
         </div>
 
         {/* Modal Footer */}
