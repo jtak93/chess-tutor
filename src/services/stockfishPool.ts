@@ -1,4 +1,5 @@
 import type { EngineEval, EngineLine } from '../types/chess';
+import { getCachedFenEval, setCachedFenEval } from './fenCache';
 
 export interface PositionEvaluationResult {
   fen: string;
@@ -8,6 +9,11 @@ export interface PositionEvaluationResult {
   bestLine: string[];
   eval: EngineEval;
   alternativeLines: EngineLine[];
+}
+
+export interface BatchEvalTask {
+  fen: string;
+  targetDepth: number;
 }
 
 interface WorkerInstance {
@@ -29,9 +35,9 @@ export class StockfishWorkerPool {
   private initPromise: Promise<void>;
 
   constructor() {
-    // Determine pool size from CPU cores (clamp between 2 and 6)
+    // Dynamically scale worker pool with CPU hardware concurrency
     const cores = typeof navigator !== 'undefined' && navigator.hardwareConcurrency ? navigator.hardwareConcurrency : 4;
-    this.poolSize = Math.max(2, Math.min(6, cores));
+    this.poolSize = Math.max(2, Math.min(12, cores >= 6 ? cores - 1 : cores));
     this.initPromise = this.initPool();
   }
 
@@ -86,7 +92,7 @@ export class StockfishWorkerPool {
         setTimeout(() => {
           instance.isReady = true;
           resolve();
-        }, 1000);
+        }, 800);
       } catch (err) {
         console.error(`Failed to initialize worker #${id}:`, err);
         resolve();
@@ -182,6 +188,9 @@ export class StockfishWorkerPool {
       alternativeLines: altLines,
     };
 
+    // Cache globally by normalized FEN
+    setCachedFenEval(inst.currentFen, result);
+
     const resolve = inst.currentResolver;
     inst.currentResolver = null;
     inst.busy = false;
@@ -189,12 +198,14 @@ export class StockfishWorkerPool {
   }
 
   public async evaluatePosition(fen: string, depth: number = 12): Promise<PositionEvaluationResult> {
+    // 1. Check FEN cache first (0ms instant hit)
+    const cached = getCachedFenEval(fen, depth);
+    if (cached) return cached;
+
     await this.initPromise;
 
-    // Find available worker
     let worker = this.workers.find((w) => !w.busy);
     if (!worker) {
-      // If all busy, pick the first one
       worker = this.workers[0];
     }
 
@@ -220,41 +231,69 @@ export class StockfishWorkerPool {
             }
           }, 100);
         }
-      }, 6000);
+      }, 5000);
     });
   }
 
   /**
-   * Evaluates an array of board FENs in parallel across the worker pool.
+   * Evaluates an array of board FENs in parallel across the worker pool,
+   * checking global FEN cache and using adaptive depth per position.
    */
   public async evaluateBatchParallel(
-    fens: string[],
-    depth: number = 12,
+    tasks: (string | BatchEvalTask)[],
+    defaultDepth: number = 12,
     onPositionDone?: (completedCount: number, totalCount: number) => void
   ): Promise<PositionEvaluationResult[]> {
     await this.initPromise;
 
-    const total = fens.length;
+    const normalizedTasks: BatchEvalTask[] = tasks.map((t) =>
+      typeof t === 'string' ? { fen: t, targetDepth: defaultDepth } : t
+    );
+
+    const total = normalizedTasks.length;
     const results: PositionEvaluationResult[] = new Array(total);
-    let nextIndex = 0;
+    const uncachedIndices: number[] = [];
     let completed = 0;
 
+    // Step 1: Instant cache resolution for already-known positions
+    for (let i = 0; i < total; i++) {
+      const task = normalizedTasks[i];
+      const cached = getCachedFenEval(task.fen, task.targetDepth);
+      if (cached) {
+        results[i] = cached;
+        completed++;
+      } else {
+        uncachedIndices.push(i);
+      }
+    }
+
+    if (onPositionDone) {
+      onPositionDone(completed, total);
+    }
+
+    if (uncachedIndices.length === 0) {
+      return results;
+    }
+
+    // Step 2: Distribute remaining uncached tasks across workers in parallel
+    let queueIdx = 0;
+
     const runWorkerLoop = async (inst: WorkerInstance) => {
-      while (nextIndex < total) {
-        const idx = nextIndex++;
-        const fen = fens[idx];
+      while (queueIdx < uncachedIndices.length) {
+        const taskIndex = uncachedIndices[queueIdx++];
+        const task = normalizedTasks[taskIndex];
 
         const res = await new Promise<PositionEvaluationResult>((resolve) => {
           inst.busy = true;
           inst.currentResolver = resolve;
-          inst.currentFen = fen;
-          inst.currentTurn = fen.split(' ')[1] === 'b' ? 'b' : 'w';
-          inst.targetDepth = depth;
+          inst.currentFen = task.fen;
+          inst.currentTurn = task.fen.split(' ')[1] === 'b' ? 'b' : 'w';
+          inst.targetDepth = task.targetDepth;
           inst.currentLines.clear();
           inst.bestMoveFound = '';
 
-          inst.worker.postMessage(`position fen ${fen}`);
-          inst.worker.postMessage(`go depth ${depth}`);
+          inst.worker.postMessage(`position fen ${task.fen}`);
+          inst.worker.postMessage(`go depth ${task.targetDepth}`);
 
           setTimeout(() => {
             if (inst.currentResolver === resolve) {
@@ -265,10 +304,10 @@ export class StockfishWorkerPool {
                 }
               }, 100);
             }
-          }, 6000);
+          }, 5000);
         });
 
-        results[idx] = res;
+        results[taskIndex] = res;
         completed++;
         if (onPositionDone) {
           onPositionDone(completed, total);
@@ -276,7 +315,6 @@ export class StockfishWorkerPool {
       }
     };
 
-    // Run all worker loops concurrently
     await Promise.all(this.workers.map((w) => runWorkerLoop(w)));
 
     return results;

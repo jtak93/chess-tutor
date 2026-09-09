@@ -2,7 +2,7 @@ import { Chess } from 'chess.js';
 import type { Square } from 'chess.js';
 import type { GameMetadata, GameReviewReport, MoveAnalysis, MoveClassification } from '../types/chess';
 import { stockfishPool } from './stockfishPool';
-import type { PositionEvaluationResult } from './stockfishPool';
+import type { PositionEvaluationResult, BatchEvalTask } from './stockfishPool';
 import { calculateGameAccuracy, classifyMove, detectSacrifice, estimatePerformanceRating } from './classification';
 import { identifyOpening, isBookMove } from './openingBook';
 import { buildRichCoachCommentary } from './tacticalReasoner';
@@ -75,16 +75,33 @@ export async function analyzeGame(
     metadata.eco = openingInfo.eco;
   }
 
-  // 1. Collect all position FENs in the game: P_0, P_1, ..., P_N
+  // 1. Collect all position FENs with Adaptive Depth Scheduling
   const startChess = new Chess();
   const fens: string[] = [startChess.fen()];
   for (const m of history) {
     fens.push(m.after);
   }
 
-  // 2. Evaluate all positions in parallel using multi-core Stockfish Worker Pool
+  const evalTasks: BatchEvalTask[] = fens.map((fen, idx) => {
+    // Starting position or early known opening book moves can use fast depth
+    const isBook = idx < 16 && isBookMove(moveSans, idx);
+    let targetDepth = depth;
+
+    if (idx === 0) {
+      targetDepth = 6;
+    } else if (isBook) {
+      targetDepth = Math.min(8, depth);
+    }
+
+    return {
+      fen,
+      targetDepth,
+    };
+  });
+
+  // 2. Evaluate all positions concurrently with Global FEN Cache + Multi-Core Pool
   const evalResults: PositionEvaluationResult[] = await stockfishPool.evaluateBatchParallel(
-    fens,
+    evalTasks,
     depth,
     (completed, total) => {
       if (onProgress) {
@@ -164,7 +181,7 @@ export async function analyzeGame(
     moveAnalyses.push(interimAnalysis);
   }
 
-  // 4. Calculate CAPS2 Game Accuracies
+  // 4. Calculate CAPS2 Game Accuracies & Performance Ratings
   const accuracies = calculateGameAccuracy(
     moveAnalyses.map((m) => ({
       turn: m.turn,
