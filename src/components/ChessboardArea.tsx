@@ -12,6 +12,8 @@ import {
   VolumeX,
   HelpCircle,
   Sparkles,
+  GitBranch,
+  X,
 } from 'lucide-react';
 
 const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
@@ -27,10 +29,12 @@ interface ChessboardAreaProps {
   onExitRetryMode?: () => void;
   soundEnabled?: boolean;
   onToggleSound?: () => void;
-  // Live Analysis Props
-  isLiveMode?: boolean;
+  // Live Variation Props
+  isVariationActive?: boolean;
+  variationMoves?: string[];
+  onExitVariation?: () => void;
   liveCandidateArrows?: Arrow[];
-  onLiveMove?: (source: Square, target: Square, promotion?: string) => boolean;
+  onPieceDropAction?: (source: Square, target: Square, promotion?: string) => boolean;
 }
 
 export const ChessboardArea: React.FC<ChessboardAreaProps> = ({
@@ -43,9 +47,11 @@ export const ChessboardArea: React.FC<ChessboardAreaProps> = ({
   onExitRetryMode,
   soundEnabled = true,
   onToggleSound,
-  isLiveMode = false,
+  isVariationActive = false,
+  variationMoves = [],
+  onExitVariation,
   liveCandidateArrows = [],
-  onLiveMove,
+  onPieceDropAction,
 }) => {
   const [retryBoardFen, setRetryBoardFen] = useState<string>(fen || START_FEN);
   const [retryMessage, setRetryMessage] = useState<string>('');
@@ -101,7 +107,7 @@ export const ChessboardArea: React.FC<ChessboardAreaProps> = ({
 
   // Build tactical visual arrows for the board
   const customArrows = useMemo<Arrow[]>(() => {
-    if (isLiveMode) {
+    if (isVariationActive && liveCandidateArrows.length > 0) {
       return liveCandidateArrows;
     }
 
@@ -116,86 +122,96 @@ export const ChessboardArea: React.FC<ChessboardAreaProps> = ({
       return arrows;
     }
 
-    if (!currentMove) return arrows;
+    if (!currentMove) {
+      return liveCandidateArrows.length > 0 ? liveCandidateArrows : arrows;
+    }
 
     // Arrow 1: Played move (colored by classification)
-    if (currentMove.from && currentMove.to) {
+    if (currentMove.from && currentMove.to && !isVariationActive) {
       const config = CLASSIFICATION_CONFIG[currentMove.classification] || CLASSIFICATION_CONFIG.good;
       const playedColor = `${config.hexColor}cc`;
       arrows.push({ startSquare: currentMove.from, endSquare: currentMove.to, color: playedColor });
     }
 
-    // Arrow 2: Best move recommendation
+    // Arrow 2: Best move recommendation or Live MultiPV lines
     if (
       showEngineArrow &&
       ['inaccuracy', 'mistake', 'miss', 'blunder'].includes(currentMove.classification) &&
       currentMove.bestMove &&
       currentMove.bestMove.length >= 4 &&
-      currentMove.bestMove !== '(none)'
+      currentMove.bestMove !== '(none)' &&
+      !isVariationActive
     ) {
       const bestFrom = currentMove.bestMove.substring(0, 2);
       const bestTo = currentMove.bestMove.substring(2, 4);
       if (bestFrom !== currentMove.from || bestTo !== currentMove.to) {
         arrows.push({ startSquare: bestFrom, endSquare: bestTo, color: 'rgba(129, 182, 76, 0.9)' });
       }
+    } else if (liveCandidateArrows.length > 0 && isVariationActive) {
+      return liveCandidateArrows;
     }
 
     return arrows;
-  }, [currentMove, showEngineArrow, isRetryMode, showHint, isLiveMode, liveCandidateArrows]);
+  }, [currentMove, showEngineArrow, isRetryMode, showHint, isVariationActive, liveCandidateArrows]);
 
-  // Handle piece drop in Retry Mistake mode or Live Sandbox mode
+  // Handle piece drop across Retry, Variation, and Free drag modes
   const handlePieceDrop = ({ sourceSquare, targetSquare, piece }: PieceDropHandlerArgs): boolean => {
-    if (isLiveMode && onLiveMove && targetSquare) {
-      const pieceType = piece?.pieceType || '';
-      const promotion = pieceType.toLowerCase() === 'p' ? 'q' : undefined;
-      const success = onLiveMove(sourceSquare as Square, targetSquare as Square, promotion);
+    if (!targetSquare) return false;
+    const pieceType = piece?.pieceType || '';
+    const promotion = pieceType.toLowerCase() === 'p' ? 'q' : undefined;
+
+    // 1. Retry Mode Challenge
+    if (isRetryMode && currentMove) {
+      try {
+        const chess = new Chess(retryBoardFen || START_FEN);
+        const move = chess.move({
+          from: sourceSquare as Square,
+          to: targetSquare as Square,
+          promotion,
+        });
+
+        if (!move) return false;
+
+        const playedUci = `${sourceSquare}${targetSquare}`;
+        const bestUci = (currentMove.bestMove || '').toLowerCase();
+
+        if (playedUci.toLowerCase() === bestUci.substring(0, 4)) {
+          setRetryBoardFen(chess.fen());
+          setRetryMessage(`Excellent! You found ${move.san}, the best move! 🎉`);
+          playSound('correct');
+          confetti({
+            particleCount: 50,
+            spread: 60,
+            origin: { y: 0.6 },
+          });
+          return true;
+        } else {
+          setRetryMessage(`Not quite. ${move.san} wasn't the top move. Try again or check the hint.`);
+          playSound('wrong');
+          return false;
+        }
+      } catch {
+        return false;
+      }
+    }
+
+    // 2. Interactive Variation or Live Sandbox Drag
+    if (onPieceDropAction) {
+      const success = onPieceDropAction(sourceSquare as Square, targetSquare as Square, promotion);
       if (success) {
         playSound('move');
       }
       return success;
     }
 
-    if (!isRetryMode || !currentMove || !targetSquare) return false;
-
-    try {
-      const chess = new Chess(retryBoardFen || START_FEN);
-      const pieceType = piece?.pieceType || '';
-      const move = chess.move({
-        from: sourceSquare as Square,
-        to: targetSquare as Square,
-        promotion: pieceType.toLowerCase() === 'p' ? 'q' : undefined,
-      });
-
-      if (!move) return false;
-
-      const playedUci = `${sourceSquare}${targetSquare}`;
-      const bestUci = (currentMove.bestMove || '').toLowerCase();
-
-      if (playedUci.toLowerCase() === bestUci.substring(0, 4)) {
-        setRetryBoardFen(chess.fen());
-        setRetryMessage(`Excellent! You found ${move.san}, the best move! 🎉`);
-        playSound('correct');
-        confetti({
-          particleCount: 50,
-          spread: 60,
-          origin: { y: 0.6 },
-        });
-        return true;
-      } else {
-        setRetryMessage(`Not quite. ${move.san} wasn't the top move. Try again or check the hint.`);
-        playSound('wrong');
-        return false;
-      }
-    } catch {
-      return false;
-    }
+    return false;
   };
 
   // Custom square badge rendering
   const customSquareStyles = useMemo(() => {
     const styles: Record<string, React.CSSProperties> = {};
 
-    if (!isLiveMode && !isRetryMode && currentMove && currentMove.to) {
+    if (!isVariationActive && !isRetryMode && currentMove && currentMove.to) {
       const config = CLASSIFICATION_CONFIG[currentMove.classification];
       if (config) {
         styles[currentMove.to] = {
@@ -205,15 +221,47 @@ export const ChessboardArea: React.FC<ChessboardAreaProps> = ({
     }
 
     return styles;
-  }, [currentMove, isRetryMode, isLiveMode]);
+  }, [currentMove, isRetryMode, isVariationActive]);
 
   const activePosition = (isRetryMode ? retryBoardFen : fen) || START_FEN;
 
   return (
     <div className="flex flex-col items-center w-full max-w-[540px]">
+      {/* Interactive Variation Branch Banner */}
+      {isVariationActive && (
+        <div className="w-full mb-2 p-2.5 rounded-xl bg-purple-950/40 border border-purple-500/50 shadow-lg flex items-center justify-between animate-fadeIn">
+          <div className="flex items-center gap-2 overflow-hidden">
+            <div className="p-1 rounded-lg bg-purple-500/20 text-purple-400">
+              <GitBranch size={15} />
+            </div>
+            <div className="overflow-hidden">
+              <div className="text-xs font-bold text-purple-300 flex items-center gap-1.5">
+                <span>Exploring Live Variation</span>
+                <span className="text-[10px] px-1.5 py-0.2 rounded bg-purple-500/20 text-purple-200 border border-purple-500/30">
+                  Live Engine Active
+                </span>
+              </div>
+              <div className="text-[11px] font-mono text-zinc-300 truncate">
+                {variationMoves.length > 0 ? variationMoves.join(' ') : 'Play alternative moves on the board'}
+              </div>
+            </div>
+          </div>
+
+          {onExitVariation && (
+            <button
+              onClick={onExitVariation}
+              className="px-2.5 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-semibold flex items-center gap-1 border border-zinc-700 transition-colors shrink-0 shadow"
+            >
+              <X size={12} />
+              <span>Back to Game</span>
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Retry Mistake banner if active */}
       {isRetryMode && (
-        <div className="w-full mb-3 p-3 rounded-lg bg-zinc-800 border border-emerald-500/50 shadow-lg flex items-center justify-between animate-fadeIn">
+        <div className="w-full mb-2 p-3 rounded-xl bg-zinc-800 border border-emerald-500/50 shadow-lg flex items-center justify-between animate-fadeIn">
           <div className="flex items-center gap-2">
             <Sparkles className="w-5 h-5 text-emerald-400 animate-pulse" />
             <div>
@@ -247,7 +295,7 @@ export const ChessboardArea: React.FC<ChessboardAreaProps> = ({
           options={{
             position: activePosition,
             boardOrientation: orientation,
-            allowDragging: isRetryMode || isLiveMode,
+            allowDragging: true, // Always allow dragging to test moves & explore variations on the fly!
             onPieceDrop: handlePieceDrop,
             arrows: customArrows,
             squareStyles: customSquareStyles,
@@ -261,8 +309,8 @@ export const ChessboardArea: React.FC<ChessboardAreaProps> = ({
           }}
         />
 
-        {/* Move Classification Badge Overlay on Target Square (Game Review mode only) */}
-        {!isLiveMode && !isRetryMode && currentMove && currentMove.to && (
+        {/* Move Classification Badge Overlay on Target Square */}
+        {!isVariationActive && !isRetryMode && currentMove && currentMove.to && (
           <TargetSquareBadge
             key={`${currentMove.ply}-${currentMove.to}-${currentMove.classification}`}
             square={currentMove.to as Square}
@@ -296,16 +344,18 @@ export const ChessboardArea: React.FC<ChessboardAreaProps> = ({
           )}
         </div>
 
-        {!isLiveMode && currentMove && (
+        {!isVariationActive && currentMove ? (
           <div className="font-mono text-zinc-400">
             {currentMove.turn === 'w' ? 'White' : 'Black'} played <span className="font-bold text-zinc-200">{currentMove.san}</span>
           </div>
-        )}
-
-        {isLiveMode && (
-          <div className="font-mono text-xs text-emerald-400 font-semibold flex items-center gap-1">
-            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-            <span>Live Analysis Sandbox</span>
+        ) : isVariationActive ? (
+          <div className="font-mono text-xs text-purple-400 font-semibold flex items-center gap-1">
+            <span className="w-2 h-2 rounded-full bg-purple-400 animate-pulse" />
+            <span>Live What-If Line</span>
+          </div>
+        ) : (
+          <div className="text-zinc-500 text-[11px]">
+            Drag pieces on board to explore variations live
           </div>
         )}
       </div>

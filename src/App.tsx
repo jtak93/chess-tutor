@@ -45,30 +45,38 @@ import {
   Sparkles,
   Gamepad2,
   Activity,
-  BookOpen,
+  Bot,
+  ListOrdered,
 } from 'lucide-react';
 
 const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 
-export const App: React.FC = () => {
-  // App Mode: 'review' (Game Review) or 'live' (Interactive Live Sandbox)
-  const [appMode, setAppMode] = useState<'review' | 'live'>('review');
+type RightPanelTab = 'coach' | 'engine' | 'moves';
 
-  // Review Mode State
+interface ActiveVariationState {
+  basePly: number;
+  moves: LiveMoveItem[];
+  currentFen: string;
+}
+
+export const App: React.FC = () => {
+  // Review Report State
   const [report, setReport] = useState<GameReviewReport | null>(null);
   const [currentPly, setCurrentPly] = useState<number>(-1);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [orientation, setOrientation] = useState<'white' | 'black'>('white');
   const [isRetryMode, setIsRetryMode] = useState<boolean>(false);
 
+  // Right Panel Tab Selection: 'coach' | 'engine' | 'moves'
+  const [activeTab, setActiveTab] = useState<RightPanelTab>('coach');
+
   // Guided Key Moments Walkthrough state
   const [isKeyMomentsMode, setIsKeyMomentsMode] = useState<boolean>(false);
   const [keyMomentIndex, setKeyMomentIndex] = useState<number>(0);
   const [keyMomentSolved, setKeyMomentSolved] = useState<boolean>(false);
 
-  // Live Analysis Mode State
-  const [liveFen, setLiveFen] = useState<string>(START_FEN);
-  const [liveMoves, setLiveMoves] = useState<LiveMoveItem[]>([]);
+  // Live Variation State (When user drags pieces on the board to test alternative lines)
+  const [activeVariation, setActiveVariation] = useState<ActiveVariationState | null>(null);
   const [liveAnalysis, setLiveAnalysis] = useState<LiveAnalysisUpdate | null>(null);
   const [isPlayEngineMode, setIsPlayEngineMode] = useState<boolean>(false);
 
@@ -101,28 +109,37 @@ export const App: React.FC = () => {
     );
   }, [report]);
 
-  // Trigger Live Engine analysis whenever liveFen changes in live mode
+  // Determine current active FEN (either variation FEN or game move FEN)
+  const gameFen = useMemo(() => {
+    if (!report || !report.moves || report.moves.length === 0) return START_FEN;
+    if (currentPly <= -1) return report.moves[0]?.fenBefore || START_FEN;
+    const safePly = Math.min(report.moves.length - 1, Math.max(0, currentPly));
+    return report.moves[safePly]?.fenAfter || START_FEN;
+  }, [report, currentPly]);
+
+  const activeFen = activeVariation ? activeVariation.currentFen : gameFen;
+
+  // Stream Live Engine analysis for active position whenever engine tab is open or variation is being explored
   useEffect(() => {
-    if (appMode === 'live') {
-      liveEngine.startAnalysis(liveFen, 18, (update) => {
+    if (activeVariation || activeTab === 'engine' || !report) {
+      liveEngine.startAnalysis(activeFen, 18, (update) => {
         setLiveAnalysis(update);
       });
     } else {
       liveEngine.stop();
     }
-  }, [appMode, liveFen]);
+  }, [activeFen, activeVariation, activeTab, report]);
 
-  // Handle Play Against Engine automatic response
+  // Handle Play Against Engine in live variations
   useEffect(() => {
-    if (appMode === 'live' && isPlayEngineMode && liveAnalysis && !liveAnalysis.isSearching && liveAnalysis.bestMoveUci) {
-      const turn = liveFen.split(' ')[1] as 'w' | 'b';
+    if (activeVariation && isPlayEngineMode && liveAnalysis && !liveAnalysis.isSearching && liveAnalysis.bestMoveUci) {
+      const turn = activeVariation.currentFen.split(' ')[1] as 'w' | 'b';
       const playerColor = orientation === 'white' ? 'w' : 'b';
 
-      // If it's engine's turn to respond
       if (turn !== playerColor && liveAnalysis.bestMoveUci.length >= 4) {
         const timer = setTimeout(() => {
           try {
-            const chess = new Chess(liveFen);
+            const chess = new Chess(activeVariation.currentFen);
             const from = liveAnalysis.bestMoveUci.substring(0, 2) as Square;
             const to = liveAnalysis.bestMoveUci.substring(2, 4) as Square;
             const promotion = liveAnalysis.bestMoveUci.length > 4 ? liveAnalysis.bestMoveUci[4] : undefined;
@@ -130,12 +147,11 @@ export const App: React.FC = () => {
             const move = chess.move({ from, to, promotion });
             if (move) {
               const newFen = chess.fen();
-              setLiveFen(newFen);
-              setLiveMoves((prev) => [
-                ...prev,
+              const newMoves: LiveMoveItem[] = [
+                ...activeVariation.moves,
                 {
-                  ply: prev.length,
-                  moveNumber: Math.floor(prev.length / 2) + 1,
+                  ply: activeVariation.moves.length,
+                  moveNumber: Math.floor(activeVariation.moves.length / 2) + 1,
                   turn: move.color,
                   san: move.san,
                   uci: liveAnalysis.bestMoveUci,
@@ -144,10 +160,16 @@ export const App: React.FC = () => {
                   piece: move.piece,
                   captured: move.captured,
                   promotion: move.promotion,
-                  fenBefore: liveFen,
+                  fenBefore: activeVariation.currentFen,
                   fenAfter: newFen,
                 },
-              ]);
+              ];
+
+              setActiveVariation({
+                basePly: activeVariation.basePly,
+                moves: newMoves,
+                currentFen: newFen,
+              });
             }
           } catch {
             // Ignore
@@ -157,11 +179,11 @@ export const App: React.FC = () => {
         return () => clearTimeout(timer);
       }
     }
-  }, [appMode, isPlayEngineMode, liveAnalysis, liveFen, orientation]);
+  }, [activeVariation, isPlayEngineMode, liveAnalysis, orientation]);
 
   const handleLoadAndAnalyzePgn = useCallback(
     async (pgn: string, forceReanalyze: boolean = false) => {
-      setAppMode('review');
+      setActiveVariation(null);
       setIsKeyMomentsMode(false);
 
       if (!forceReanalyze) {
@@ -212,7 +234,7 @@ export const App: React.FC = () => {
           setIsRetryMode(false);
           setIsPlaying(false);
           setIsKeyMomentsMode(false);
-          setAppMode('review');
+          setActiveVariation(null);
         }
       }
     } catch (err) {
@@ -222,6 +244,7 @@ export const App: React.FC = () => {
 
   const handleStartKeyMoments = useCallback(() => {
     if (keyMoments.length === 0) return;
+    setActiveVariation(null);
     setIsKeyMomentsMode(true);
     setKeyMomentIndex(0);
     setKeyMomentSolved(false);
@@ -236,6 +259,7 @@ export const App: React.FC = () => {
   const handleSelectKeyMomentIndex = useCallback(
     (index: number) => {
       if (index < 0 || index >= keyMoments.length) return;
+      setActiveVariation(null);
       setKeyMomentIndex(index);
       setKeyMomentSolved(false);
 
@@ -252,6 +276,7 @@ export const App: React.FC = () => {
     setIsPlaying(false);
     setIsRetryMode(false);
     setIsKeyMomentsMode(false);
+    setActiveVariation(null);
     setCurrentPly(-1);
   }, []);
 
@@ -259,28 +284,47 @@ export const App: React.FC = () => {
     setIsPlaying(false);
     setIsRetryMode(false);
     setIsKeyMomentsMode(false);
+    if (activeVariation) {
+      if (activeVariation.moves.length > 1) {
+        const trimmed = activeVariation.moves.slice(0, -1);
+        const last = trimmed[trimmed.length - 1];
+        setActiveVariation({
+          basePly: activeVariation.basePly,
+          moves: trimmed,
+          currentFen: last.fenAfter,
+        });
+      } else {
+        setActiveVariation(null);
+      }
+      return;
+    }
     setCurrentPly((prev) => Math.max(-1, prev - 1));
-  }, []);
+  }, [activeVariation]);
 
   const handleNextMove = useCallback(() => {
     setIsPlaying(false);
     setIsRetryMode(false);
     setIsKeyMomentsMode(false);
+    if (activeVariation) {
+      setActiveVariation(null);
+    }
     if (report && report.moves) {
       setCurrentPly((prev) => Math.min(report.moves.length - 1, prev + 1));
     }
-  }, [report]);
+  }, [report, activeVariation]);
 
   const handleLastMove = useCallback(() => {
     setIsPlaying(false);
     setIsRetryMode(false);
     setIsKeyMomentsMode(false);
+    setActiveVariation(null);
     if (report && report.moves) {
       setCurrentPly(report.moves.length - 1);
     }
   }, [report]);
 
   const handleTogglePlay = useCallback(() => {
+    setActiveVariation(null);
     setIsPlaying((prev) => !prev);
   }, []);
 
@@ -288,28 +332,16 @@ export const App: React.FC = () => {
     setIsPlaying(false);
     setIsRetryMode(false);
     setIsKeyMomentsMode(false);
+    setActiveVariation(null);
     setCurrentPly(ply);
   }, []);
 
-  // Switch to Live Sandbox starting from current position in Review mode
-  const handleExploreFromCurrentPosition = useCallback(() => {
-    const currentBoardFen = (() => {
-      if (!report || !report.moves || report.moves.length === 0) return START_FEN;
-      if (currentPly <= -1) return report.moves[0]?.fenBefore || START_FEN;
-      const safePly = Math.min(report.moves.length - 1, Math.max(0, currentPly));
-      return report.moves[safePly]?.fenAfter || START_FEN;
-    })();
-
-    setLiveFen(currentBoardFen);
-    setLiveMoves([]);
-    setAppMode('live');
-  }, [report, currentPly]);
-
-  // Handle piece drop in Live Mode
-  const handleLiveMove = useCallback(
+  // Handle piece drop on board: if move matches next game move, step forward; otherwise, explore variation live!
+  const handlePieceDropAction = useCallback(
     (source: Square, target: Square, promotion?: string): boolean => {
       try {
-        const chess = new Chess(liveFen);
+        const boardFen = activeVariation ? activeVariation.currentFen : gameFen;
+        const chess = new Chess(boardFen);
         const move = chess.move({
           from: source,
           to: target,
@@ -318,49 +350,63 @@ export const App: React.FC = () => {
 
         if (!move) return false;
 
-        const newFen = chess.fen();
-        setLiveFen(newFen);
-        setLiveMoves((prev) => [
-          ...prev,
-          {
-            ply: prev.length,
-            moveNumber: Math.floor(prev.length / 2) + 1,
-            turn: move.color,
-            san: move.san,
-            uci: `${source}${target}${promotion || ''}`,
-            from: source,
-            to: target,
-            piece: move.piece,
-            captured: move.captured,
-            promotion: move.promotion,
-            fenBefore: liveFen,
-            fenAfter: newFen,
-          },
-        ]);
+        const nextFen = chess.fen();
+        const playedUci = `${source}${target}${promotion || ''}`;
 
+        // Check if move matches the actual game's next move
+        const nextGameMove = report && currentPly + 1 < report.moves.length ? report.moves[currentPly + 1] : null;
+        if (!activeVariation && nextGameMove && (nextGameMove.uci === playedUci || nextGameMove.san === move.san)) {
+          setCurrentPly((prev) => prev + 1);
+          return true;
+        }
+
+        // Otherwise: Create or append to the live variation branch!
+        const newMoveItem: LiveMoveItem = {
+          ply: activeVariation ? activeVariation.moves.length : 0,
+          moveNumber: Math.floor((activeVariation ? activeVariation.moves.length : 0) / 2) + 1,
+          turn: move.color,
+          san: move.san,
+          uci: playedUci,
+          from: source,
+          to: target,
+          piece: move.piece,
+          captured: move.captured,
+          promotion: move.promotion,
+          fenBefore: boardFen,
+          fenAfter: nextFen,
+        };
+
+        setActiveVariation((prev) => ({
+          basePly: prev ? prev.basePly : currentPly,
+          moves: prev ? [...prev.moves, newMoveItem] : [newMoveItem],
+          currentFen: nextFen,
+        }));
+
+        // Automatically open engine lines tab so the user sees live calculation
+        setActiveTab('engine');
         return true;
       } catch {
         return false;
       }
     },
-    [liveFen]
+    [activeVariation, gameFen, report, currentPly]
   );
 
-  // Play preview line from Live Analysis
+  // Play a candidate preview line
   const handlePreviewLiveLine = useCallback(
     (line: LiveEngineLine) => {
       if (!line.uci || line.uci.length < 4) return;
       const from = line.uci.substring(0, 2) as Square;
       const to = line.uci.substring(2, 4) as Square;
       const promotion = line.uci.length > 4 ? line.uci[4] : undefined;
-      handleLiveMove(from, to, promotion);
+      handlePieceDropAction(from, to, promotion);
     },
-    [handleLiveMove]
+    [handlePieceDropAction]
   );
 
-  // Build colored MultiPV candidate arrows for live board
+  // MultiPV candidate colored arrows
   const liveCandidateArrows = useMemo<Arrow[]>(() => {
-    if (appMode !== 'live' || !liveAnalysis?.topLines) return [];
+    if (!liveAnalysis?.topLines) return [];
     const arrows: Arrow[] = [];
     const colors = [
       'rgba(129, 182, 76, 0.9)', // Rank 1: Emerald Green
@@ -381,7 +427,7 @@ export const App: React.FC = () => {
     });
 
     return arrows;
-  }, [appMode, liveAnalysis]);
+  }, [liveAnalysis]);
 
   // Handle browser back button / popstate gracefully
   useEffect(() => {
@@ -455,24 +501,16 @@ export const App: React.FC = () => {
   }, [handlePrevMove, handleNextMove, handleFirstMove, handleLastMove, handleTogglePlay]);
 
   const currentMove =
-    report && report.moves && currentPly >= 0 && currentPly < report.moves.length
+    !activeVariation && report && report.moves && currentPly >= 0 && currentPly < report.moves.length
       ? report.moves[currentPly]
       : null;
 
-  const currentFen = (() => {
-    if (appMode === 'live') return liveFen;
-    if (!report || !report.moves || report.moves.length === 0) return START_FEN;
-    if (currentPly <= -1) return report.moves[0]?.fenBefore || START_FEN;
-    const safePly = Math.min(report.moves.length - 1, Math.max(0, currentPly));
-    return report.moves[safePly]?.fenAfter || START_FEN;
-  })();
-
   const currentEval = (() => {
-    if (appMode === 'live') {
-      return liveAnalysis?.evaluation || { type: 'cp' as const, value: 0, whiteValue: 0, depth: 0 };
+    if (activeVariation && liveAnalysis?.evaluation) {
+      return liveAnalysis.evaluation;
     }
     if (!report || !report.moves || report.moves.length === 0) {
-      return { type: 'cp' as const, value: 0, whiteValue: 0, depth: 0 };
+      return liveAnalysis?.evaluation || { type: 'cp' as const, value: 0, whiteValue: 0, depth: 0 };
     }
     if (currentPly <= -1) {
       return report.moves[0]?.evalBefore || { type: 'cp' as const, value: 0, whiteValue: 0, depth: 0 };
@@ -480,6 +518,8 @@ export const App: React.FC = () => {
     const safePly = Math.min(report.moves.length - 1, Math.max(0, currentPly));
     return report.moves[safePly]?.evalAfter || { type: 'cp' as const, value: 0, whiteValue: 0, depth: 0 };
   })();
+
+  const variationMoveSans = activeVariation ? activeVariation.moves.map((m) => m.san) : [];
 
   return (
     <ErrorBoundary>
@@ -498,38 +538,6 @@ export const App: React.FC = () => {
                 </span>
               </h1>
             </div>
-          </div>
-
-          {/* Mode Selector Tabs: [Game Review] vs [Live Analysis] */}
-          <div className="flex items-center bg-zinc-850 p-1 rounded-xl border border-zinc-700/80">
-            <button
-              onClick={() => setAppMode('review')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all ${
-                appMode === 'review'
-                  ? 'bg-emerald-600 text-white shadow-md'
-                  : 'text-zinc-400 hover:text-zinc-200'
-              }`}
-            >
-              <BookOpen size={13} />
-              <span>Game Review</span>
-            </button>
-
-            <button
-              onClick={() => {
-                setAppMode('live');
-                if (report) {
-                  handleExploreFromCurrentPosition();
-                }
-              }}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all ${
-                appMode === 'live'
-                  ? 'bg-emerald-600 text-white shadow-md'
-                  : 'text-zinc-400 hover:text-zinc-200'
-              }`}
-            >
-              <Activity size={13} className={appMode === 'live' ? 'animate-pulse' : ''} />
-              <span>Live Analysis</span>
-            </button>
           </div>
 
           {/* Quick Sample Selector & Action Buttons */}
@@ -574,58 +582,17 @@ export const App: React.FC = () => {
 
         {/* Main Workspace Layout */}
         <main className="flex-1 max-w-7xl w-full mx-auto p-2 sm:p-4 flex flex-col gap-3">
-          {/* Header Bar */}
-          {appMode === 'review' ? (
-            <GameReviewHeader
-              report={report}
-              onOpenSummary={() => setIsSummaryModalOpen(true)}
-              onOpenImport={() => setIsImportModalOpen(true)}
-              onStartKeyMoments={handleStartKeyMoments}
-              isKeyMomentsActive={isKeyMomentsMode}
-            />
-          ) : (
-            <div className="w-full bg-[#1e1d1a] border border-zinc-800 rounded-xl p-3 shadow-md flex items-center justify-between">
-              <div className="flex items-center gap-2.5">
-                <div className="p-2 rounded-lg bg-emerald-500/20 text-emerald-400">
-                  <Activity size={18} className="animate-spin" />
-                </div>
-                <div>
-                  <div className="text-sm font-bold text-zinc-100 flex items-center gap-2">
-                    <span>Live Interactive Sandbox</span>
-                    <span className="text-[10px] uppercase font-mono px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
-                      Depth {liveAnalysis?.depth || 0}/18
-                    </span>
-                  </div>
-                  <div className="text-xs text-zinc-400">
-                    Play moves freely on the board for either side. Stockfish analyzes candidate lines on the fly.
-                  </div>
-                </div>
-              </div>
+          {/* Game Header with Players, Accuracy, and Performance ELO */}
+          <GameReviewHeader
+            report={report}
+            onOpenSummary={() => setIsSummaryModalOpen(true)}
+            onOpenImport={() => setIsImportModalOpen(true)}
+            onStartKeyMoments={handleStartKeyMoments}
+            isKeyMomentsActive={isKeyMomentsMode}
+          />
 
-              <div className="flex items-center gap-2">
-                {report && (
-                  <button
-                    onClick={() => setAppMode('review')}
-                    className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-semibold border border-zinc-700 transition-colors"
-                  >
-                    Return to Game Review
-                  </button>
-                )}
-                <button
-                  onClick={() => {
-                    setLiveFen(START_FEN);
-                    setLiveMoves([]);
-                  }}
-                  className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold shadow transition-colors"
-                >
-                  New Sandbox Board
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* Guided Key Moments Walkthrough Bar if Active in Review Mode */}
-          {appMode === 'review' && isKeyMomentsMode && keyMoments.length > 0 && (
+          {/* Guided Key Moments Walkthrough Bar if Active */}
+          {isKeyMomentsMode && keyMoments.length > 0 && !activeVariation && (
             <KeyMomentsBar
               keyMoments={keyMoments}
               currentIndex={keyMomentIndex}
@@ -639,9 +606,9 @@ export const App: React.FC = () => {
             />
           )}
 
-          {/* Board, Eval Bar, Move List, and AI Coach Panel */}
+          {/* Board, Eval Bar, and Right Workspace Tabs */}
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 flex-1 items-start">
-            {/* Left Column: Eval Bar + Chessboard (7 cols on large screens) */}
+            {/* Left Column: Eval Bar + Interactive Board (7 cols) */}
             <div className="lg:col-span-7 flex flex-col items-center gap-2">
               <div className="flex items-center justify-center gap-2 sm:gap-3 w-full">
                 {/* Vertical Evaluation Bar */}
@@ -651,10 +618,10 @@ export const App: React.FC = () => {
                   height="h-[320px] sm:h-[480px] md:h-[520px]"
                 />
 
-                {/* Chessboard Area */}
+                {/* Chessboard Area (Always interactive with live variation support) */}
                 <ChessboardArea
                   currentMove={currentMove}
-                  fen={currentFen}
+                  fen={activeFen}
                   orientation={orientation}
                   onFlipBoard={() =>
                     setOrientation((prev) => (prev === 'white' ? 'black' : 'white'))
@@ -664,99 +631,80 @@ export const App: React.FC = () => {
                   onExitRetryMode={() => setIsRetryMode(false)}
                   soundEnabled={soundEnabled}
                   onToggleSound={() => setSoundEnabled((prev) => !prev)}
-                  isLiveMode={appMode === 'live'}
+                  isVariationActive={Boolean(activeVariation)}
+                  variationMoves={variationMoveSans}
+                  onExitVariation={() => setActiveVariation(null)}
                   liveCandidateArrows={liveCandidateArrows}
-                  onLiveMove={handleLiveMove}
+                  onPieceDropAction={handlePieceDropAction}
                 />
               </div>
 
               {/* Playback & Navigation Controls */}
-              {appMode === 'review' ? (
-                <div className="flex items-center justify-between w-full max-w-[540px] bg-[#1e1d1a] border border-zinc-800 p-2 rounded-xl shadow-md">
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={handleFirstMove}
-                      disabled={currentPly <= -1}
-                      className="p-2 rounded-lg hover:bg-zinc-800 disabled:opacity-30 text-zinc-300 transition-colors"
-                      title="First Move (Up Arrow)"
-                    >
-                      <ChevronsLeft size={18} />
-                    </button>
-
-                    <button
-                      onClick={handlePrevMove}
-                      disabled={currentPly <= -1}
-                      className="p-2 rounded-lg hover:bg-zinc-800 disabled:opacity-30 text-zinc-300 transition-colors"
-                      title="Previous Move (Left Arrow)"
-                    >
-                      <ChevronLeft size={20} />
-                    </button>
-
-                    <button
-                      onClick={handleTogglePlay}
-                      disabled={!report}
-                      className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white font-bold transition-all shadow hover:scale-105 flex items-center gap-1.5 text-xs"
-                      title="Play / Pause (Space)"
-                    >
-                      {isPlaying ? <Pause size={16} /> : <Play size={16} className="fill-white" />}
-                      <span>{isPlaying ? 'Pause' : 'Play'}</span>
-                    </button>
-
-                    <button
-                      onClick={handleNextMove}
-                      disabled={!report || !report.moves || currentPly >= report.moves.length - 1}
-                      className="p-2 rounded-lg hover:bg-zinc-800 disabled:opacity-30 text-zinc-300 transition-colors"
-                      title="Next Move (Right Arrow)"
-                    >
-                      <ChevronRight size={20} />
-                    </button>
-
-                    <button
-                      onClick={handleLastMove}
-                      disabled={!report || !report.moves || currentPly >= report.moves.length - 1}
-                      className="p-2 rounded-lg hover:bg-zinc-800 disabled:opacity-30 text-zinc-300 transition-colors"
-                      title="Last Move (Down Arrow)"
-                    >
-                      <ChevronsRight size={18} />
-                    </button>
-                  </div>
+              <div className="flex items-center justify-between w-full max-w-[540px] bg-[#1e1d1a] border border-zinc-800 p-2 rounded-xl shadow-md">
+                <div className="flex items-center gap-1 sm:gap-2">
+                  <button
+                    onClick={handleFirstMove}
+                    disabled={currentPly <= -1 && !activeVariation}
+                    className="p-2 rounded-lg hover:bg-zinc-800 disabled:opacity-30 text-zinc-300 transition-colors"
+                    title="First Move (Up Arrow)"
+                  >
+                    <ChevronsLeft size={18} />
+                  </button>
 
                   <button
-                    onClick={handleExploreFromCurrentPosition}
-                    className="px-2.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-emerald-400 text-xs font-semibold flex items-center gap-1 border border-zinc-700 transition-colors"
-                    title="Explore variations live from this position"
+                    onClick={handlePrevMove}
+                    disabled={currentPly <= -1 && !activeVariation}
+                    className="p-2 rounded-lg hover:bg-zinc-800 disabled:opacity-30 text-zinc-300 transition-colors"
+                    title="Previous Move (Left Arrow)"
                   >
-                    <Activity size={13} />
-                    <span>Explore Line</span>
+                    <ChevronLeft size={20} />
                   </button>
-                </div>
-              ) : (
-                <div className="flex items-center justify-between w-full max-w-[540px] bg-[#1e1d1a] border border-zinc-800 p-2 rounded-xl shadow-md text-xs text-zinc-400">
-                  <div className="flex items-center gap-2">
-                    <span className="font-semibold text-zinc-200">
-                      Moves Played: {liveMoves.length}
-                    </span>
-                    {liveMoves.length > 0 && (
-                      <span className="font-mono text-emerald-400">
-                        ({liveMoves.map((m) => m.san).slice(-4).join(' ')})
-                      </span>
-                    )}
-                  </div>
 
                   <button
-                    onClick={() => {
-                      setLiveFen(START_FEN);
-                      setLiveMoves([]);
-                    }}
-                    className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-semibold border border-zinc-700 transition-colors"
+                    onClick={handleTogglePlay}
+                    disabled={!report}
+                    className="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white font-bold transition-all shadow hover:scale-105 flex items-center gap-1.5 text-xs"
+                    title="Play / Pause (Space)"
                   >
-                    Reset Board
+                    {isPlaying ? <Pause size={15} /> : <Play size={15} className="fill-white" />}
+                    <span>{isPlaying ? 'Pause' : 'Play'}</span>
+                  </button>
+
+                  <button
+                    onClick={handleNextMove}
+                    disabled={!report || !report.moves || currentPly >= report.moves.length - 1}
+                    className="p-2 rounded-lg hover:bg-zinc-800 disabled:opacity-30 text-zinc-300 transition-colors"
+                    title="Next Move (Right Arrow)"
+                  >
+                    <ChevronRight size={20} />
+                  </button>
+
+                  <button
+                    onClick={handleLastMove}
+                    disabled={!report || !report.moves || currentPly >= report.moves.length - 1}
+                    className="p-2 rounded-lg hover:bg-zinc-800 disabled:opacity-30 text-zinc-300 transition-colors"
+                    title="Last Move (Down Arrow)"
+                  >
+                    <ChevronsRight size={18} />
                   </button>
                 </div>
-              )}
+
+                {activeVariation ? (
+                  <button
+                    onClick={() => setActiveVariation(null)}
+                    className="px-2.5 py-1 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold transition-colors shadow"
+                  >
+                    Back to Game Move
+                  </button>
+                ) : (
+                  <div className="text-[11px] text-zinc-400 font-mono hidden sm:block">
+                    Drag any piece to test what-if lines
+                  </div>
+                )}
+              </div>
 
               {/* Evaluation Advantage Graph (Review Mode) */}
-              {appMode === 'review' && report && report.moves && report.moves.length > 0 && (
+              {report && report.moves && report.moves.length > 0 && (
                 <div className="w-full max-w-[540px]">
                   <EvaluationGraph
                     moves={report.moves}
@@ -772,74 +720,99 @@ export const App: React.FC = () => {
               </div>
             </div>
 
-            {/* Right Column: Move List & AI Coach Panel (Review) OR Live Analysis Panel (Live) */}
-            <div className="lg:col-span-5 grid grid-cols-1 gap-3 h-full">
-              {appMode === 'live' ? (
-                <div className="min-h-[500px]">
+            {/* Right Column: Unified Right Workspace Tabs (5 cols) */}
+            <div className="lg:col-span-5 flex flex-col gap-2 h-full">
+              {/* Workspace Navigation Tabs */}
+              <div className="flex items-center gap-1 bg-[#1e1d1a] border border-zinc-800 p-1 rounded-xl shadow">
+                <button
+                  onClick={() => setActiveTab('coach')}
+                  className={`flex-1 py-1.5 px-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-all ${
+                    activeTab === 'coach'
+                      ? 'bg-emerald-600 text-white shadow'
+                      : 'text-zinc-400 hover:text-zinc-200'
+                  }`}
+                >
+                  <Bot size={14} />
+                  <span>AI Coach</span>
+                </button>
+
+                <button
+                  onClick={() => setActiveTab('engine')}
+                  className={`flex-1 py-1.5 px-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-all ${
+                    activeTab === 'engine'
+                      ? 'bg-emerald-600 text-white shadow'
+                      : 'text-zinc-400 hover:text-zinc-200'
+                  }`}
+                >
+                  <Activity size={14} className={liveAnalysis?.isSearching ? 'animate-spin' : ''} />
+                  <span>Live Lines</span>
+                </button>
+
+                <button
+                  onClick={() => setActiveTab('moves')}
+                  className={`flex-1 py-1.5 px-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-all ${
+                    activeTab === 'moves'
+                      ? 'bg-emerald-600 text-white shadow'
+                      : 'text-zinc-400 hover:text-zinc-200'
+                  }`}
+                >
+                  <ListOrdered size={14} />
+                  <span>Moves {report ? `(${report.moves.length})` : ''}</span>
+                </button>
+              </div>
+
+              {/* Active Tab Panel Content */}
+              <div className="min-h-[460px] sm:min-h-[520px]">
+                {activeTab === 'coach' && (
+                  <CoachPanel
+                    currentMove={currentMove}
+                    currentFen={activeFen}
+                    persona={persona}
+                    onRetryMove={() => setIsRetryMode(true)}
+                  />
+                )}
+
+                {activeTab === 'engine' && (
                   <LiveAnalysisPanel
                     analysis={liveAnalysis}
-                    currentFen={liveFen}
+                    currentFen={activeFen}
                     onPreviewLine={handlePreviewLiveLine}
                     persona={persona}
-                    onResetToStart={() => {
-                      setLiveFen(START_FEN);
-                      setLiveMoves([]);
-                    }}
+                    onResetToStart={() => setActiveVariation(null)}
                     isPlayEngineMode={isPlayEngineMode}
                     onTogglePlayEngine={() => setIsPlayEngineMode((prev) => !prev)}
                   />
-                </div>
-              ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-1 gap-3 h-full">
-                  {/* AI Coach Panel */}
-                  <div className="h-[360px] sm:h-[400px]">
-                    <CoachPanel
-                      currentMove={currentMove}
-                      currentFen={currentFen}
-                      persona={persona}
-                      onRetryMove={() => setIsRetryMode(true)}
-                    />
-                  </div>
+                )}
 
-                  {/* Move List */}
-                  <div className="h-[280px] sm:h-[320px]">
-                    {report && report.moves ? (
-                      <MoveList
-                        moves={report.moves}
-                        currentPly={currentPly}
-                        onSelectPly={handleSelectPly}
-                      />
-                    ) : (
-                      <div className="h-full bg-[#1e1d1a] border border-zinc-800 rounded-xl p-5 flex flex-col items-center justify-center text-center space-y-3 shadow-md">
-                        <div className="w-10 h-10 rounded-full bg-zinc-800 flex items-center justify-center text-zinc-400">
-                          <Gamepad2 size={20} />
-                        </div>
-                        <div>
-                          <div className="text-xs font-bold text-zinc-200">No Game Loaded</div>
-                          <div className="text-[11px] text-zinc-500 mt-0.5">
-                            Import a PGN or select a sample game to view the full move review.
-                          </div>
-                        </div>
-                        <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
-                          <button
-                            onClick={() => handleLoadAndAnalyzePgn(SAMPLE_GAMES[0].pgn)}
-                            className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium border border-zinc-700 flex items-center gap-1 transition-colors"
-                          >
-                            <Sparkles size={12} className="text-emerald-400" />
-                            Review User Game
-                          </button>
-                          <button
-                            onClick={() => setIsImportModalOpen(true)}
-                            className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium transition-colors shadow"
-                          >
-                            Import PGN
-                          </button>
+                {activeTab === 'moves' && (
+                  report && report.moves ? (
+                    <MoveList
+                      moves={report.moves}
+                      currentPly={currentPly}
+                      onSelectPly={handleSelectPly}
+                    />
+                  ) : (
+                    <div className="h-full bg-[#1e1d1a] border border-zinc-800 rounded-xl p-5 flex flex-col items-center justify-center text-center space-y-3 shadow-md">
+                      <div className="w-10 h-10 rounded-full bg-zinc-800 flex items-center justify-center text-zinc-400">
+                        <Gamepad2 size={20} />
+                      </div>
+                      <div>
+                        <div className="text-xs font-bold text-zinc-200">No Game Loaded</div>
+                        <div className="text-[11px] text-zinc-500 mt-0.5">
+                          Import a PGN to view the full move review table.
                         </div>
                       </div>
-                    )}
-                  </div>
-                </div>
-              )}
+                      <button
+                        onClick={() => handleLoadAndAnalyzePgn(SAMPLE_GAMES[0].pgn)}
+                        className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium border border-zinc-700 flex items-center gap-1 transition-colors"
+                      >
+                        <Sparkles size={12} className="text-emerald-400" />
+                        Review User Game
+                      </button>
+                    </div>
+                  )
+                )}
+              </div>
             </div>
           </div>
         </main>
