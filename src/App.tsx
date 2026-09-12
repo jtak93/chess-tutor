@@ -120,31 +120,47 @@ export const App: React.FC = () => {
   }, [report, currentPly]);
 
   const activeFen = viewMode === 'live_studio' ? studioFen : gameFen;
+  const isBotMovingRef = useRef<boolean>(false);
 
   // Start continuous streaming live analysis whenever studio mode is open or engine tab is selected
   useEffect(() => {
-    if (viewMode === 'live_studio' || reviewTab === 'engine' || !report) {
+    const shouldRunLiveEngine =
+      viewMode === 'live_studio' || (viewMode === 'review' && reviewTab === 'engine');
+
+    if (shouldRunLiveEngine) {
       liveEngine.startAnalysis(activeFen, 18, (update) => {
         setLiveAnalysis(update);
       });
     } else {
       liveEngine.stop();
     }
-  }, [activeFen, viewMode, reviewTab, report]);
+  }, [activeFen, viewMode, reviewTab]);
 
   // Handle Play Against Engine in live studio mode
   useEffect(() => {
-    if (viewMode === 'live_studio' && isPlayEngineMode && liveAnalysis && !liveAnalysis.isSearching && liveAnalysis.bestMoveUci) {
+    if (
+      viewMode === 'live_studio' &&
+      isPlayEngineMode &&
+      liveAnalysis &&
+      !liveAnalysis.isSearching &&
+      liveAnalysis.fen === studioFen &&
+      liveAnalysis.bestMoveUci &&
+      liveAnalysis.bestMoveUci.length >= 4 &&
+      !isBotMovingRef.current
+    ) {
       const turn = studioFen.split(' ')[1] as 'w' | 'b';
       const playerColor = orientation === 'white' ? 'w' : 'b';
 
-      if (turn !== playerColor && liveAnalysis.bestMoveUci.length >= 4) {
+      if (turn !== playerColor) {
+        isBotMovingRef.current = true;
+        const uciToPlay = liveAnalysis.bestMoveUci;
+
         const timer = setTimeout(() => {
           try {
             const chess = new Chess(studioFen);
-            const from = liveAnalysis.bestMoveUci.substring(0, 2) as Square;
-            const to = liveAnalysis.bestMoveUci.substring(2, 4) as Square;
-            const promotion = liveAnalysis.bestMoveUci.length > 4 ? liveAnalysis.bestMoveUci[4] : undefined;
+            const from = uciToPlay.substring(0, 2) as Square;
+            const to = uciToPlay.substring(2, 4) as Square;
+            const promotion = uciToPlay.length > 4 ? uciToPlay[4] : undefined;
 
             const move = chess.move({ from, to, promotion });
             if (move) {
@@ -157,7 +173,7 @@ export const App: React.FC = () => {
                   moveNumber: Math.floor(prev.length / 2) + 1,
                   turn: move.color,
                   san: move.san,
-                  uci: liveAnalysis.bestMoveUci,
+                  uci: uciToPlay,
                   from: move.from,
                   to: move.to,
                   piece: move.piece,
@@ -168,12 +184,17 @@ export const App: React.FC = () => {
                 },
               ]);
             }
-          } catch {
-            // Ignore
+          } catch (err) {
+            console.warn('Bot move failed safely:', err);
+          } finally {
+            isBotMovingRef.current = false;
           }
-        }, 600);
+        }, 500);
 
-        return () => clearTimeout(timer);
+        return () => {
+          clearTimeout(timer);
+          isBotMovingRef.current = false;
+        };
       }
     }
   }, [viewMode, isPlayEngineMode, liveAnalysis, studioFen, orientation]);

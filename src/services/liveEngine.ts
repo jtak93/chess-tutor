@@ -24,7 +24,7 @@ export function uciToSanSequence(fen: string, uciMoves: string[]): string[] {
       }
     }
   } catch {
-    // Ignore invalid sequences
+    // Ignore invalid sequences safely
   }
   return result;
 }
@@ -33,10 +33,20 @@ export class LiveEngineService {
   private worker: Worker | null = null;
   public isReady: boolean = false;
   private isSearching: boolean = false;
+  private isWorkerBusy: boolean = false;
+
   private currentFen: string = '';
   private currentTurn: 'w' | 'b' = 'w';
   private maxDepth: number = 18;
   private updateCallback: ((update: LiveAnalysisUpdate) => void) | null = null;
+
+  // Search generation token to discard stale messages from prior positions
+  private currentSearchId: number = 0;
+  private activeSearchId: number = 0;
+
+  // Debounce & command queue
+  private debounceTimer: any = null;
+  private pendingSearch: { fen: string; depth: number; searchId: number } | null = null;
 
   // Active MultiPV map
   private linesMap = new Map<number, LiveEngineLine>();
@@ -51,6 +61,15 @@ export class LiveEngineService {
 
   private initWorker() {
     try {
+      if (this.worker) {
+        try {
+          this.worker.terminate();
+        } catch {
+          // ignore
+        }
+        this.worker = null;
+      }
+
       this.worker = new Worker('/stockfish/stockfish-18-asm.js');
 
       this.worker.onmessage = (e: MessageEvent) => {
@@ -59,7 +78,11 @@ export class LiveEngineService {
       };
 
       this.worker.onerror = (err) => {
-        console.error('Live Engine worker error:', err);
+        console.error('Live Engine worker error. Recovering worker instance...', err);
+        this.isWorkerBusy = false;
+        this.isSearching = false;
+        this.isReady = false;
+        setTimeout(() => this.initWorker(), 200);
       };
 
       this.worker.postMessage('uci');
@@ -76,6 +99,25 @@ export class LiveEngineService {
 
     if (line === 'readyok' || line.includes('uciok')) {
       this.isReady = true;
+      this.isWorkerBusy = false;
+      if (this.pendingSearch) {
+        const next = this.pendingSearch;
+        this.pendingSearch = null;
+        this.dispatchSearch(next.fen, next.depth, next.searchId);
+      }
+      return;
+    }
+
+    // Discard any UCI evaluation message that belongs to an older search generation
+    if (this.activeSearchId !== this.currentSearchId) {
+      if (line.startsWith('bestmove ')) {
+        this.isWorkerBusy = false;
+        if (this.pendingSearch) {
+          const next = this.pendingSearch;
+          this.pendingSearch = null;
+          this.dispatchSearch(next.fen, next.depth, next.searchId);
+        }
+      }
       return;
     }
 
@@ -141,7 +183,14 @@ export class LiveEngineService {
       const parts = line.split(/\s+/);
       this.bestMoveUci = parts[1] || '';
       this.isSearching = false;
+      this.isWorkerBusy = false;
       this.emitUpdate();
+
+      if (this.pendingSearch) {
+        const next = this.pendingSearch;
+        this.pendingSearch = null;
+        this.dispatchSearch(next.fen, next.depth, next.searchId);
+      }
     }
   }
 
@@ -180,15 +229,41 @@ export class LiveEngineService {
     this.updateCallback(update);
   }
 
+  private dispatchSearch(fen: string, depth: number, searchId: number) {
+    if (searchId !== this.currentSearchId) return;
+
+    if (!this.worker) {
+      this.initWorker();
+    }
+
+    this.activeSearchId = searchId;
+    this.isWorkerBusy = true;
+    this.isSearching = true;
+
+    try {
+      this.worker?.postMessage(`position fen ${fen}`);
+      this.worker?.postMessage(`go depth ${depth}`);
+    } catch (err) {
+      console.error('Error posting message to live engine worker:', err);
+      this.isWorkerBusy = false;
+      this.initWorker();
+    }
+  }
+
   /**
-   * Starts streaming live analysis for a specific position FEN.
+   * Starts streaming live analysis for a specific position FEN with debouncing and generation tracking.
    */
   public startAnalysis(
     fen: string,
     depth: number = 18,
     onUpdate: (update: LiveAnalysisUpdate) => void
   ) {
-    this.stop();
+    if (this.debounceTimer) {
+      clearTimeout(this.debounceTimer);
+      this.debounceTimer = null;
+    }
+
+    const searchId = ++this.currentSearchId;
 
     this.currentFen = fen;
     this.currentTurn = fen.split(' ')[1] === 'b' ? 'b' : 'w';
@@ -201,29 +276,58 @@ export class LiveEngineService {
     this.bestMoveUci = '';
     this.isSearching = true;
 
-    if (!this.worker) {
-      this.initWorker();
-    }
+    // Emit initial loading state immediately so UI updates and clears stale best moves
+    this.emitUpdate();
 
-    this.worker?.postMessage(`position fen ${fen}`);
-    this.worker?.postMessage(`go depth ${depth}`);
+    // Debounce actual worker execution by 80ms to smooth out rapid arrow key / drag movements
+    this.debounceTimer = setTimeout(() => {
+      if (searchId !== this.currentSearchId) return;
+
+      if (this.isWorkerBusy) {
+        // Signal worker to stop current calculation before sending new position
+        this.pendingSearch = { fen, depth, searchId };
+        try {
+          this.worker?.postMessage('stop');
+        } catch {
+          this.initWorker();
+        }
+      } else {
+        this.dispatchSearch(fen, depth, searchId);
+      }
+    }, 80);
   }
 
   /**
-   * Stops active engine search immediately.
+   * Stops active engine search immediately and cancels any pending search.
    */
   public stop() {
-    if (this.isSearching) {
-      this.worker?.postMessage('stop');
-      this.isSearching = false;
+    if (this.debounceTimer) {
+      clearTimeout(this.debounceTimer);
+      this.debounceTimer = null;
+    }
+    this.pendingSearch = null;
+    this.currentSearchId++;
+    this.isSearching = false;
+
+    if (this.isWorkerBusy) {
+      try {
+        this.worker?.postMessage('stop');
+      } catch {
+        // ignore
+      }
     }
   }
 
   public terminate() {
     this.stop();
-    this.worker?.terminate();
+    try {
+      this.worker?.terminate();
+    } catch {
+      // ignore
+    }
     this.worker = null;
     this.isReady = false;
+    this.isWorkerBusy = false;
   }
 }
 
