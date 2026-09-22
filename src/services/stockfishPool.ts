@@ -54,7 +54,8 @@ export class StockfishWorkerPool {
   private createWorkerInstance(id: number): Promise<void> {
     return new Promise((resolve) => {
       try {
-        const worker = new Worker('/stockfish/stockfish-18-asm.js');
+        const workerUrl = ((import.meta as any).env?.BASE_URL || '/') + 'stockfish/stockfish-18-asm.js';
+        const worker = new Worker(workerUrl);
         const instance: WorkerInstance = {
           id,
           worker,

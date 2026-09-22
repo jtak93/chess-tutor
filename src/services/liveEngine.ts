@@ -70,7 +70,8 @@ export class LiveEngineService {
         this.worker = null;
       }
 
-      this.worker = new Worker('/stockfish/stockfish-18-asm.js');
+      const workerUrl = ((import.meta as any).env?.BASE_URL || '/') + 'stockfish/stockfish-18-asm.js';
+      this.worker = new Worker(workerUrl);
 
       this.worker.onmessage = (e: MessageEvent) => {
         const data = typeof e.data === 'string' ? e.data : '';
