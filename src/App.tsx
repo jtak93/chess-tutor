@@ -32,6 +32,11 @@ import { Footer } from './components/Footer';
 import { PrivacyPolicyModal } from './components/PrivacyPolicyModal';
 import { TermsModal } from './components/TermsModal';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { ShareModal } from './components/ShareModal';
+import { SupportModal } from './components/SupportModal';
+import { GameHistoryDrawer } from './components/GameHistoryDrawer';
+import { CookieConsentBanner } from './components/CookieConsentBanner';
+import { decodeGameFromUrl } from './services/shareService';
 
 import {
   ChevronLeft,
@@ -49,6 +54,9 @@ import {
   ListOrdered,
   ExternalLink,
   BookOpen,
+  Share2,
+  History,
+  Heart,
 } from 'lucide-react';
 
 const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
@@ -82,12 +90,16 @@ export const App: React.FC = () => {
   const [liveAnalysis, setLiveAnalysis] = useState<LiveAnalysisUpdate | null>(null);
   const [isPlayEngineMode, setIsPlayEngineMode] = useState<boolean>(false);
 
-  // Modals
+  // Modals & Drawers
+  const [rawPgn, setRawPgn] = useState<string>('');
   const [isImportModalOpen, setIsImportModalOpen] = useState<boolean>(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState<boolean>(false);
   const [isSummaryModalOpen, setIsSummaryModalOpen] = useState<boolean>(false);
   const [isPrivacyModalOpen, setIsPrivacyModalOpen] = useState<boolean>(false);
   const [isTermsModalOpen, setIsTermsModalOpen] = useState<boolean>(false);
+  const [isShareModalOpen, setIsShareModalOpen] = useState<boolean>(false);
+  const [isSupportModalOpen, setIsSupportModalOpen] = useState<boolean>(false);
+  const [isHistoryDrawerOpen, setIsHistoryDrawerOpen] = useState<boolean>(false);
 
   // Engine & Coach settings
   const [persona, setPersona] = useState<CoachPersona>(getStoredPersona());
@@ -209,6 +221,7 @@ export const App: React.FC = () => {
 
   const handleLoadAndAnalyzePgn = useCallback(
     async (pgn: string, forceReanalyze: boolean = false) => {
+      setRawPgn(pgn);
       setViewMode('review');
       setIsKeyMomentsMode(false);
 
@@ -248,6 +261,14 @@ export const App: React.FC = () => {
     },
     [engineDepth]
   );
+
+  // Automatically load game from URL hash if present
+  useEffect(() => {
+    const pgnFromUrl = decodeGameFromUrl();
+    if (pgnFromUrl && pgnFromUrl.trim().length > 0) {
+      handleLoadAndAnalyzePgn(pgnFromUrl);
+    }
+  }, [handleLoadAndAnalyzePgn]);
 
   const handleLoadCachedKey = useCallback((cacheKey: string) => {
     try {
@@ -595,7 +616,36 @@ export const App: React.FC = () => {
           </div>
 
           {/* Quick Sample Selector & Action Buttons */}
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5 sm:gap-2">
+            <button
+              onClick={() => setIsHistoryDrawerOpen(true)}
+              className="p-1.5 sm:px-2.5 sm:py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-semibold text-xs flex items-center gap-1.5 border border-zinc-700 transition-colors shadow-sm"
+              title="Review History"
+            >
+              <History size={14} className="text-teal-400" />
+              <span className="hidden lg:inline">History</span>
+            </button>
+
+            {report && (
+              <button
+                onClick={() => setIsShareModalOpen(true)}
+                className="p-1.5 sm:px-2.5 sm:py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 font-semibold text-xs flex items-center gap-1.5 border border-zinc-700 transition-colors shadow-sm"
+                title="Share Game or Export Scorecard"
+              >
+                <Share2 size={14} className="text-emerald-400" />
+                <span className="hidden lg:inline">Share</span>
+              </button>
+            )}
+
+            <button
+              onClick={() => setIsSupportModalOpen(true)}
+              className="p-1.5 sm:px-2.5 sm:py-1.5 rounded-lg bg-emerald-950/40 hover:bg-emerald-900/50 text-emerald-300 font-semibold text-xs flex items-center gap-1.5 border border-emerald-500/30 transition-all shadow-sm"
+              title="Support Chess Tutor"
+            >
+              <Heart size={14} className="text-pink-400 fill-pink-400/20" />
+              <span className="hidden lg:inline">Support</span>
+            </button>
+
             <div className="relative hidden md:block">
               <select
                 onChange={(e) => {
@@ -606,7 +656,7 @@ export const App: React.FC = () => {
                 className="bg-zinc-800/90 border border-zinc-700 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-emerald-500 cursor-pointer"
               >
                 <option value="" disabled>
-                  ⚡ Load Sample Game...
+                  ⚡ Sample Games...
                 </option>
                 {SAMPLE_GAMES.map((g) => (
                   <option key={g.id} value={g.id}>
@@ -847,7 +897,10 @@ export const App: React.FC = () => {
 
               {/* Leaderboard Ad Slot */}
               <div className="w-full max-w-[540px] pt-1">
-                <AdBanner format="horizontal" />
+                <AdBanner
+                  format="horizontal"
+                  onOpenSupport={() => setIsSupportModalOpen(true)}
+                />
               </div>
             </div>
 
@@ -969,13 +1022,14 @@ export const App: React.FC = () => {
           </div>
         </main>
 
-        {/* Footer with Privacy Policy & Terms */}
+        {/* Footer with Privacy Policy, Terms & Support */}
         <Footer
           onOpenPrivacy={() => setIsPrivacyModalOpen(true)}
           onOpenTerms={() => setIsTermsModalOpen(true)}
+          onOpenSupport={() => setIsSupportModalOpen(true)}
         />
 
-        {/* Modals */}
+        {/* Modals & Drawers */}
         <ImportGameModal
           isOpen={isImportModalOpen}
           onClose={() => setIsImportModalOpen(false)}
@@ -1013,6 +1067,31 @@ export const App: React.FC = () => {
           totalPlies={totalAnalyzingPlies}
         />
 
+        <ShareModal
+          isOpen={isShareModalOpen}
+          onClose={() => setIsShareModalOpen(false)}
+          report={report}
+          rawPgn={rawPgn}
+        />
+
+        <SupportModal
+          isOpen={isSupportModalOpen}
+          onClose={() => setIsSupportModalOpen(false)}
+        />
+
+        <GameHistoryDrawer
+          isOpen={isHistoryDrawerOpen}
+          onClose={() => setIsHistoryDrawerOpen(false)}
+          onSelectGame={(savedReport) => {
+            setReport(savedReport);
+            setCurrentPly(0);
+            setIsRetryMode(false);
+            setIsPlaying(false);
+            setIsKeyMomentsMode(false);
+            setViewMode('review');
+          }}
+        />
+
         <PrivacyPolicyModal
           isOpen={isPrivacyModalOpen}
           onClose={() => setIsPrivacyModalOpen(false)}
@@ -1021,6 +1100,11 @@ export const App: React.FC = () => {
         <TermsModal
           isOpen={isTermsModalOpen}
           onClose={() => setIsTermsModalOpen(false)}
+        />
+
+        {/* GDPR / CCPA Cookie Consent Banner */}
+        <CookieConsentBanner
+          onOpenPrivacy={() => setIsPrivacyModalOpen(true)}
         />
       </div>
     </ErrorBoundary>
