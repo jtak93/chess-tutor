@@ -1,0 +1,16 @@
+{
+  "name": "Chess Tutor - AI Game Review & Analysis",
+  "short_name": "Chess Tutor",
+  "description": "Unlimited free Stockfish 18 chess game review with grandmaster AI coaching and CAPS2 accuracy.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#161512",
+  "theme_color": "#161512",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml"
+    }
+  ]
+}
