@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import type { CoachPersona, MoveAnalysis } from '../types/chess';
 import { CLASSIFICATION_CONFIG } from './BadgeIcon';
 import { geminiCoachService, getStoredApiKey } from '../services/geminiCoach';
@@ -33,12 +33,19 @@ export const CoachPanel: React.FC<CoachPanelProps> = ({
   const [chatInput, setChatInput] = useState<string>('');
   const [chatMessages, setChatMessages] = useState<{ sender: 'coach' | 'user'; text: string }[]>([]);
   const [sendingChat, setSendingChat] = useState<boolean>(false);
+  const chatEndRef = useRef<HTMLDivElement>(null);
 
   const apiKey = getStoredApiKey();
 
   useEffect(() => {
     setGeminiExplanation('');
   }, [currentMove?.ply]);
+
+  useEffect(() => {
+    if (chatMessages.length > 0 || sendingChat) {
+      chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [chatMessages.length, sendingChat]);
 
   const handleRequestAiExplanation = async () => {
     if (!currentMove) return;
@@ -74,10 +81,14 @@ export const CoachPanel: React.FC<CoachPanelProps> = ({
         apiKey
       );
       setChatMessages([...newHistory, { sender: 'coach' as const, text: coachReply }]);
-    } catch {
+    } catch (err) {
+      console.error('Coach chat error:', err);
       setChatMessages([
         ...newHistory,
-        { sender: 'coach' as const, text: "Focus on piece coordination, controlling key central squares, and safeguarding your king." },
+        {
+          sender: 'coach' as const,
+          text: 'Focus on piece coordination, controlling key central squares, and safeguarding your king.',
+        },
       ]);
     } finally {
       setSendingChat(false);
@@ -272,6 +283,16 @@ export const CoachPanel: React.FC<CoachPanelProps> = ({
                 <div>{msg.text}</div>
               </div>
             ))}
+
+            {/* Live Thinking Indicator */}
+            {sendingChat && (
+              <div className="p-2 rounded-xl bg-emerald-950/20 text-emerald-300 text-xs mr-4 border border-emerald-800/20 flex items-center gap-2 animate-pulse">
+                <Bot size={13} />
+                <span>Coach is thinking...</span>
+              </div>
+            )}
+
+            <div ref={chatEndRef} />
           </div>
         )}
       </div>
@@ -289,7 +310,7 @@ export const CoachPanel: React.FC<CoachPanelProps> = ({
         <button
           type="submit"
           disabled={!chatInput.trim() || sendingChat}
-          className="p-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white transition-colors"
+          className="p-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white transition-colors shadow"
           title="Send question to Coach"
         >
           <Send size={14} />

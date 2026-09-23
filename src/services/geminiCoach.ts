@@ -23,7 +23,7 @@ export function setStoredPersona(persona: CoachPersona): void {
 
 const PERSONA_PROMPTS: Record<CoachPersona, string> = {
   grandmaster:
-    'You are a World-Class Grandmaster Chess Coach (in the style of Chess.com Game Review Coach). You provide sharp, concrete, and deeply insightful chess analysis. You highlight piece coordination, pawn structure weaknesses, tactical motifs (pins, forks, skewers, deflection, king safety), and concrete lines.',
+    'You are a World-Class Grandmaster Chess Coach. You provide sharp, concrete, and deeply insightful chess analysis. You highlight piece coordination, pawn structure weaknesses, tactical motifs (pins, forks, skewers, deflection, king safety), and concrete lines.',
   strict:
     'You are Grandmaster Boris, a strict, no-nonsense Russian Chess Master. You are blunt, demanding, and direct. You point out tactical carelessness, criticize lazy pawn moves, and demand sharp calculation.',
   friendly:
@@ -31,6 +31,61 @@ const PERSONA_PROMPTS: Record<CoachPersona, string> = {
   witty:
     'You are Coach Blitz, a witty, energetic chess streamer. You use chess humor, dynamic commentary, and lively analogies while delivering master-level tactical insights.',
 };
+
+/**
+ * Generates an intelligent, local, persona-flavored chess response without needing an API key.
+ */
+function generateLocalCoachAnswer(
+  question: string,
+  currentMove: MoveAnalysis | null,
+  currentFen: string,
+  persona: CoachPersona
+): string {
+  const qLower = question.toLowerCase();
+  const player = currentMove?.turn === 'w' ? 'White' : 'Black';
+  const opponent = currentMove?.turn === 'w' ? 'Black' : 'White';
+  const san = currentMove?.san || '';
+  const bestSan = currentMove?.bestMoveSan || currentMove?.bestMove || '';
+  const classification = currentMove?.classification || 'good';
+
+  let personaPrefix = '';
+  if (persona === 'strict') personaPrefix = 'Look closely. ';
+  else if (persona === 'friendly') personaPrefix = 'Great question! ';
+  else if (persona === 'witty') personaPrefix = 'Boom! Here is the truth: ';
+
+  // 1. Question about why a move was a mistake / blunder / inaccuracy
+  if (qLower.includes('why') && (qLower.includes('bad') || qLower.includes('blunder') || qLower.includes('mistake') || qLower.includes('wrong') || qLower.includes('inaccuracy'))) {
+    if (currentMove && ['inaccuracy', 'mistake', 'miss', 'blunder'].includes(classification)) {
+      return `${personaPrefix}${san} gave away a ${Math.abs(currentMove.winChanceDelta).toFixed(1)}% win chance advantage. Instead of ${san}, the computer engine strongly preferred ${bestSan}, which preserves piece coordination and prevents ${opponent}'s tactical threats.`;
+    }
+    return `${personaPrefix}In this position (${currentFen.split(' ')[0]}), piece activity and king safety are paramount. Always look for undefended pieces and open files before making your move.`;
+  }
+
+  // 2. Question about the best move or what to play
+  if (qLower.includes('best move') || qLower.includes('what should') || qLower.includes('recommend') || qLower.includes('what to play') || qLower.includes('idea')) {
+    if (bestSan) {
+      return `${personaPrefix}The top computer recommendation is **${bestSan}**. This move maximizes piece activity, controls key central squares, and limits ${opponent}'s counterplay.`;
+    }
+    return `${personaPrefix}Focus on developing all minor pieces, securing king safety via castling, and controlling the central d4/d5/e4/e5 squares.`;
+  }
+
+  // 3. Question about king safety or castling
+  if (qLower.includes('king') || qLower.includes('castle') || qLower.includes('f2') || qLower.includes('f7') || qLower.includes('h3') || qLower.includes('g2') || qLower.includes('g7')) {
+    return `${personaPrefix}King safety is the #1 priority in chess. Leaving the king uncastled or creating pawn holes around the king shield allows tactical queen and rook invasions.`;
+  }
+
+  // 4. Question about pieces (knight, bishop, rook, queen, pawn)
+  if (qLower.includes('knight') || qLower.includes('bishop') || qLower.includes('rook') || qLower.includes('queen') || qLower.includes('pawn')) {
+    return `${personaPrefix}Every piece needs an active outpost. Knights thrive on closed central outposts, bishops need open diagonals, and rooks belong on open and semi-open files!`;
+  }
+
+  // 5. General fallback
+  if (currentMove) {
+    return `${personaPrefix}On turn ${currentMove.moveNumber}, ${player} played ${san} (${classification.toUpperCase()}). ${currentMove.coachComment || 'Focus on maintaining initiative and calculating forced checks and captures before moving.'}`;
+  }
+
+  return `${personaPrefix}Examine the position closely: calculate checks, captures, and threats (CCT). Keep your pieces coordinated and control the center!`;
+}
 
 export class GeminiCoachService {
   private getClient(apiKey?: string): GoogleGenAI | null {
@@ -42,6 +97,32 @@ export class GeminiCoachService {
       console.warn('Failed to initialize GoogleGenAI client:', err);
       return null;
     }
+  }
+
+  private async callGeminiWithTimeout(client: GoogleGenAI, prompt: string, timeoutMs: number = 6000): Promise<string | null> {
+    const modelsToTry = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+
+    for (const model of modelsToTry) {
+      try {
+        const timeoutPromise = new Promise<null>((_, reject) =>
+          setTimeout(() => reject(new Error('Gemini API timeout')), timeoutMs)
+        );
+
+        const generatePromise = client.models.generateContent({
+          model,
+          contents: prompt,
+        });
+
+        const response: any = await Promise.race([generatePromise, timeoutPromise]);
+        if (response && response.text) {
+          return response.text;
+        }
+      } catch (err: any) {
+        console.warn(`Gemini model ${model} attempt failed:`, err?.message || err);
+        // continue to next model or fallback
+      }
+    }
+    return null;
   }
 
   /**
@@ -80,19 +161,10 @@ Write a 2-3 sentence coaching breakdown:
 1. Explain the concrete tactical/strategic reason for why ${move.san} was ${move.classification}.
 2. If it was a mistake or blunder, explain the tactical refutation that ${opponent} can exploit, and explain why ${move.bestMoveSan} was better.
 3. If it was a brilliant or great move, highlight the tactical foresight.
-Keep it punchy, instructive, and directly referencing key squares (e.g. f3, f2, h3, d4). Max 70 words.`;
+Keep it punchy, instructive, and directly referencing key squares. Max 70 words.`;
 
-    try {
-      const response = await client.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: prompt,
-      });
-
-      return response.text || move.coachComment || '';
-    } catch (err) {
-      console.error('Gemini API move explanation error:', err);
-      return move.coachComment || '';
-    }
+    const text = await this.callGeminiWithTimeout(client, prompt, 6000);
+    return text || move.coachComment || '';
   }
 
   /**
@@ -106,7 +178,7 @@ Keep it punchy, instructive, and directly referencing key squares (e.g. f3, f2, 
   ): Promise<string> {
     const client = this.getClient(apiKey);
     if (!client) {
-      return 'Enter your Gemini API Key in Settings to enable live AI Coach advice for custom positions.';
+      return generateLocalCoachAnswer('evaluate position and best plan', null, fen, persona);
     }
 
     const personaInstructions = PERSONA_PROMPTS[persona] || PERSONA_PROMPTS.grandmaster;
@@ -121,17 +193,8 @@ Provide a 2-3 sentence strategic explanation for the student:
 2. Outline the immediate threats, weak squares, and the best plan for the side to move.
 Keep it punchy, instructive, and under 70 words.`;
 
-    try {
-      const response = await client.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: prompt,
-      });
-
-      return response.text || 'Focus on piece coordination, controlling open files, and king safety.';
-    } catch (err) {
-      console.error('Gemini custom position explanation error:', err);
-      return 'Focus on active piece development and controlling central squares.';
-    }
+    const text = await this.callGeminiWithTimeout(client, prompt, 6000);
+    return text || generateLocalCoachAnswer('evaluate position and best plan', null, fen, persona);
   }
 
   /**
@@ -147,11 +210,10 @@ Keep it punchy, instructive, and under 70 words.`;
   ): Promise<string> {
     const client = this.getClient(apiKey);
     if (!client) {
-      return 'Please enter your Gemini API Key in Settings (top right) to chat live with the AI Chess Coach!';
+      return generateLocalCoachAnswer(question, currentMove, currentFen, persona);
     }
 
     const personaInstructions = PERSONA_PROMPTS[persona] || PERSONA_PROMPTS.grandmaster;
-
     const historyContext = chatHistory
       .slice(-4)
       .map((m) => `${m.sender === 'user' ? 'Student' : 'Coach'}: ${m.text}`)
@@ -171,17 +233,8 @@ Student's Question: "${question}"
 
 Provide a clear, master-level chess tutor response answering the question directly. Reference specific pieces, squares, tactics, and plans. Keep it crisp, instructional, and under 90 words.`;
 
-    try {
-      const response = await client.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: prompt,
-      });
-
-      return response.text || "Focus on piece coordination, controlling key central squares, and safeguarding your king.";
-    } catch (err) {
-      console.error('Gemini API chat error:', err);
-      return "Sorry, I couldn't reach the AI coaching engine. Please verify your API key in Settings.";
-    }
+    const text = await this.callGeminiWithTimeout(client, prompt, 6000);
+    return text || generateLocalCoachAnswer(question, currentMove, currentFen, persona);
   }
 }
 
